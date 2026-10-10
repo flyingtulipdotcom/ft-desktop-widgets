@@ -1,6 +1,6 @@
 // node test/lint.js : static checks for the skin (INI structure, cross references, Lua syntax, scrub).
 const fs = require("fs"), path = require("path"), cp = require("child_process")
-const root = path.join(__dirname, "..", "Skins", "FlyingTulip")
+const root = process.env.FT_SKIN_DIR || path.join(__dirname, "..", "Skins", "FlyingTulip")
 const errs = [], ok = (c, m) => { if (!c) errs.push(m) }
 
 function parseIni(file) {
@@ -41,25 +41,62 @@ for (const [n, s] of Object.entries(main.sections)) {
   ok(/^\["https:\/\/flyingtulip\.com\/[^"]*"\]$/.test(s.LeftMouseUpAction || ""), n + " has no flyingtulip.com link")
 }
 
-// every download measure maps to a key the Lua parses, with a unique file, and no key is orphaned
-const files = {}, keys = new Set()
+// Option names Rainmeter 4.5 actually reads (MeasureWebParser.cpp, Measure.cpp/Section.cpp, PluginInputText).
+// A misspelt action option is silently ignored by Rainmeter, which is how v1.0.0 shipped OnConnectErrAction.
+const GENERAL = ["Measure", "Group", "Disabled", "Paused", "DynamicVariables", "UpdateDivider", "OnUpdateAction", "OnChangeAction",
+  "Substitute", "RegExpSubstitute", "MinValue", "MaxValue", "AverageSize", "Invert", "IfCondition", "IfTrueAction", "IfFalseAction"]
+const WEBPARSER = new Set([...GENERAL, "URL", "RegExp", "StringIndex", "StringIndex2", "UpdateRate", "DecodeCharacterReference",
+  "DecodeCodePoints", "Debug", "Debug2File", "Download", "DownloadFile", "ErrorString", "LogSubstringErrors", "CodePage",
+  "ProxyServer", "UserAgent", "Flags", "ForceReload", "FinishAction", "OnConnectErrorAction", "OnRegExpErrorAction",
+  "OnDownloadErrorAction"].map(s => s.toLowerCase()))
+const INPUTTEXT = new Set([...GENERAL, "Plugin", "X", "Y", "W", "H", "SolidColor", "FontColor", "FontFace", "FontSize",
+  "StringStyle", "StringAlign", "FocusDismiss", "DefaultValue", "Password", "TopMost", "InputLimit", "InputNumber",
+  "OnDismissAction"].map(s => s.toLowerCase()))
+const known = (set, k) => set.has(k.toLowerCase()) || /^Header\d*$/i.test(k) || (set === INPUTTEXT && /^Command\d+$/.test(k))
+
+// every WebParser measure fetches the public API into memory, maps to a key the Lua knows, and reports errors
+const keys = new Set()
+const measuresBlock = (lua.match(/local MEASURES = \{([\s\S]*?)\n\}/) || [])[1]
+ok(measuresBlock, "Lua MEASURES table missing")
+const luaMeasures = Object.fromEntries([...(measuresBlock || "").matchAll(/(\w+) = "(Measure\w+)"/g)].map(m => [m[1], m[2]]))
 for (const [n, s] of Object.entries(data.sections)) {
-  ok(s.Measure === "WebParser" && s.Download === "1", n + " must be a Download=1 WebParser")
+  ok(s.Measure === "WebParser", n + " must be a WebParser measure")
+  for (const k of Object.keys(s)) ok(known(WEBPARSER, k), n + ": " + k + " is not a WebParser option Rainmeter reads")
+  ok(!("Download" in s) && !("DownloadFile" in s), n + " must not download to disk (fetch into memory)")
+  ok(s.RegExp === "(?s)^(.*)$" && s.StringIndex === "1", n + " must capture the whole body: RegExp=(?s)^(.*)$ StringIndex=1")
   ok(/^https:\/\/api\.flyingtulip\.com\//.test(s.URL), n + " URL must be the public API over https: " + s.URL)
   ok(!/key|token|secret|apikey/i.test(s.URL), n + " URL looks like it carries a credential")
-  ok(!(s.DownloadFile in files), "duplicate DownloadFile " + s.DownloadFile); files[s.DownloadFile] = n
-  const k = (s.FinishAction.match(/OnData\('(\w+)'\)/) || [])[1]
+  ok(/(^|\|)ForceReload(\||$)/.test(s.Flags || ""), n + " must bypass the WinINet cache (Flags=ForceReload|...)")
+  const k = ((s.FinishAction || "").match(/^\[!CommandMeasure MeasureScript "OnData\('(\w+)'\)"\]$/) || [])[1]
   ok(k, n + " FinishAction does not call OnData"); keys.add(k)
-  ok(new RegExp("\\b" + k + " = \"" + s.DownloadFile.replace(".", "\\.") + "\"").test(lua), "Lua FILES[" + k + "] != " + s.DownloadFile)
-  ok(/OnError\('(\w+)'\)/.test(s.OnConnectErrAction || ""), n + " has no OnConnectErrAction")
+  ok(luaMeasures[k] === n, "Lua MEASURES[" + k + "] is " + luaMeasures[k] + ", Data.inc has " + n)
+  for (const a of ["OnConnectErrorAction", "OnRegExpErrorAction"])
+    ok((s[a] || "") === "[!CommandMeasure MeasureScript \"OnError('" + k + "')\"]", n + " " + a + " must call OnError('" + k + "')")
   if (s.URL.includes("#Wallet#")) ok(s.Group === "Account" && s.Disabled === "1", n + " uses the wallet so it must start disabled in group Account")
   else if (n !== "MeasureRank") ok(s.Group === "Data", n + " should be in group Data")
+  if (s.URL.includes("#RankPage#")) ok(s.DynamicVariables === "1" && Number(s.UpdateRate) >= 600, n + " needs DynamicVariables=1 and a long UpdateRate (pages are forced from Lua)")
 }
-const filesBlock = lua.match(/local FILES = \{([\s\S]*?)\n\}/)[1]
-for (const m of filesBlock.matchAll(/(\w+) = "/g)) ok(keys.has(m[1]), "Lua FILES key " + m[1] + " has no download measure")
-ok(main.sections.MeasureInput && main.sections.MeasureInput.Plugin === "InputText", "InputText measure missing")
+for (const k of Object.keys(luaMeasures)) ok(keys.has(k), "Lua MEASURES key " + k + " has no WebParser measure")
+const input = main.sections.MeasureInput
+ok(input && input.Measure === "Plugin" && input.Plugin === "InputText", "InputText measure missing")
+if (input) {
+  for (const k of Object.keys(input)) ok(known(INPUTTEXT, k), "MeasureInput: " + k + " is not an InputText option")
+  ok(/^\[!CommandMeasure MeasureScript "SetWallet\('\$UserInput\$'\)"\]$/.test(input.Command1 || ""), "InputText Command1 must call SetWallet('$UserInput$')")
+  ok(/Render\(\)/.test(input.OnDismissAction || ""), "InputText OnDismissAction must call Render()")
+}
+for (const where of [main.sections.Rainmeter.ContextAction, main.sections.MeterBtnWallet.LeftMouseUpAction])
+  ok(/\[!CommandMeasure MeasureInput "ExecuteBatch 1"\]$/.test(where || ""), "Set wallet must end with ExecuteBatch 1: " + where)
 ok(/OnLoaded\(\)/.test(main.sections.Rainmeter.OnRefreshAction), "OnRefreshAction must call OnLoaded")
 ok(/Settings\.inc/.test(JSON.stringify(main.sections.Variables)), "Settings.inc not included")
+
+// SKIN only exists once Initialize() runs (Rainmeter sets it after the chunk): the one read must be inside Initialize
+const code = lua.replace(/--.*$/gm, "")
+const skinReads = [...code.matchAll(/\bSKIN\b/g)].length
+const init = (code.match(/\nfunction Initialize\(\)\n([\s\S]*?)\nend\n/) || [])[1] || ""
+ok(skinReads === 1 && /\bSK = SKIN\b/.test(init), "Lua must read SKIN exactly once, as SK = SKIN inside Initialize()")
+ok(!/^local SK\s*=/m.test(code), "Lua must not capture SKIN at load time")
+// Rainmeter reads a script without a UTF-16 BOM as ANSI: keep it ASCII, write symbols as [\NNNN] references
+ok(!/[^\x00-\x7f]/.test(lua), "FlyingTulip.lua must be plain ASCII")
 
 // Lua syntax (Rainmeter embeds 5.1)
 for (const f of ["@Resources/Lua/FlyingTulip.lua"]) {
@@ -83,4 +120,4 @@ ok(open === close, "Notify.ps1 brackets unbalanced")
 ok(/ToastNotificationManager/.test(ps) && !/Invoke-Expression|iex |DownloadString/i.test(ps), "Notify.ps1 shape")
 
 if (errs.length) { console.error(errs.join("\n")); process.exit(1) }
-console.log("lint ok: " + Object.keys(main.sections).length + " Main.ini sections, " + Object.keys(data.sections).length + " download measures, " + all.length + " files scanned")
+console.log("lint ok: " + Object.keys(main.sections).length + " Main.ini sections, " + Object.keys(data.sections).length + " WebParser measures, " + all.length + " files scanned")

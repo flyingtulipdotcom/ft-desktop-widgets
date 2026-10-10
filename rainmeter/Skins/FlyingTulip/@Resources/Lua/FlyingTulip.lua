@@ -1,6 +1,14 @@
 -- Flying Tulip skin logic (Lua 5.1, as embedded in Rainmeter).
--- Data arrives as files written by WebParser (Download=1); every FinishAction calls OnData(key).
+-- Each WebParser measure keeps one JSON body in memory (RegExp (?s)^(.*)$); its FinishAction calls OnData(key),
+-- which reads it with SKIN:GetMeasure(name):GetStringValue().
 -- Public API only: https://api.flyingtulip.com. No keys, no RPC.
+--
+-- SKIN does not exist while this file runs. Rainmeter runs the chunk first and only then puts SKIN and SELF into
+-- the script's environment, before calling Initialize(). Everything that touches SKIN runs from Initialize() on.
+-- (v1.0.0 captured SKIN at load time, got nil, and every callback failed: the skin stayed on "loading...".)
+--
+-- The file must stay plain ASCII without a UTF-16 BOM. Rainmeter then treats the script as ANSI: strings to and
+-- from the skin go through the system code page, so non-ASCII glyphs are written as [\NNNN] character references.
 
 local API = "https://api.flyingtulip.com"
 local SITE = "https://flyingtulip.com/"
@@ -41,6 +49,42 @@ local function utf8char(cp)
 end
 
 local parseValue
+
+-- index just past the string that opens at a (a is the opening quote)
+local function stringEnd(s, a)
+  local j = a + 1
+  while true do
+    local q = s:find('["\\]', j)
+    if not q then error("unterminated string") end
+    if s:byte(q) == 92 then j = q + 2 else return q + 1 end
+  end
+end
+
+-- index just past the value at i, without building it (the 500 KB /mm/lend body is mostly chart series)
+local function skipValue(s, i)
+  i = skipws(s, i)
+  local c = s:byte(i)
+  if c == 34 then return stringEnd(s, i) end
+  if c == 123 or c == 91 then
+    local depth, j = 0, i
+    while true do
+      local a = s:find('[][{}"]', j)
+      if not a then error("unterminated container") end
+      local b = s:byte(a)
+      if b == 34 then j = stringEnd(s, a)
+      elseif b == 123 or b == 91 then depth = depth + 1; j = a + 1
+      else
+        depth = depth - 1; j = a + 1
+        if depth == 0 then return j end
+      end
+    end
+  end
+  local _, e = s:find("^[%w%.%+%-]+", i)
+  if not e then error("unexpected character at " .. i) end
+  return e + 1
+end
+
+local SKIP -- object keys whose values the current decode drops (set by jsonDecode)
 
 local function parseString(s, i)
   local out, j = {}, i + 1
@@ -85,9 +129,13 @@ function parseValue(s, i)
       k, i = parseString(s, i)
       i = skipws(s, i)
       if s:sub(i, i) ~= ":" then error("colon expected at " .. i) end
-      local v
-      v, i = parseValue(s, i + 1)
-      obj[k] = v
+      if SKIP and SKIP[k] then
+        i = skipValue(s, i + 1)
+      else
+        local v
+        v, i = parseValue(s, i + 1)
+        obj[k] = v
+      end
       i = skipws(s, i)
       local d = s:sub(i, i)
       if d == "}" then return obj, i + 1 end
@@ -120,13 +168,17 @@ function parseValue(s, i)
   return tonumber(s:sub(a, b)), b + 1
 end
 
-local function jsonDecode(s)
+-- skip: optional set of object keys (at any depth) whose values are dropped unparsed
+local function jsonDecode(s, skip)
+  if type(s) ~= "string" or s == "" then return nil end
+  SKIP = skip
   local ok, v = pcall(function()
     local val, i = parseValue(s, 1)
     i = skipws(s, i)
     if i <= #s then error("trailing data") end
     return val
   end)
+  SKIP = nil
   if ok then return v end
   return nil
 end
@@ -162,7 +214,10 @@ local function fmtPrice(p)
   if not p then return "-" end
   return string.format(p >= 1 and "$%.2f" or "$%.4f", p)
 end
-local INF = "\226\136\158" -- U+221E
+-- U+221E. A placeholder byte that setText turns into the character reference [\8734] after cleaning: the ANSI
+-- script cannot carry the UTF-8 bytes (Rainmeter would show them as mojibake).
+local INF = "\001"
+local INF_REF = "[\\8734]"
 local function fmtHf(hf)
   if not hf then return INF end
   if hf >= 100 then return ">100" end
@@ -297,10 +352,11 @@ local function parseRewards(body)
       pending = rawUnits(st.pending_yield_ft, 18)
       if st.claimed_yield_indexed_through_block and not st.claimed_yield_stale then claimed = rawUnits(st.claimed_yield_ft, 18) end
     else
-      pending, claimed = (errs.staking and nil or 0), (errs.staking and nil or 0)
+      if errs.staking then pending, claimed = nil, nil else pending, claimed = 0, 0 end
     end
     local sft = (pending and claimed) and (pending + claimed) or nil
-    local lend = errs.lend and nil or 0
+    local lend = 0
+    if errs.lend then lend = nil end
     if c.lend then
       local fr = lm and lm.ftRewards
       if lm and lm.ftRewardsError then lend = nil
@@ -461,18 +517,21 @@ end
 
 -- ---------------------------------------------------------------- skin state and rendering
 local S, cfg, alertState
-local SK = SKIN
+local SK -- the SKIN object, set by Initialize() (it does not exist yet while this chunk runs)
 local io_ = io
 
-local FILES = {
-  price = "price.json", fees = "fees.json", feesSeries = "fees_series.json", klines = "klines.json",
-  lend = "lend.json", lend143 = "lend143.json", sum146 = "sum146.json", sum1 = "sum1.json", sum56 = "sum56.json",
-  sum143 = "sum143.json", rewards = "rewards.json", points = "points.json", pos146 = "pos146.json",
-  pos1 = "pos1.json", pos56 = "pos56.json", puts = "puts.json", rank = "rank.json"
+-- data key -> WebParser measure (Data.inc) holding that endpoint's JSON body
+local MEASURES = {
+  price = "MeasurePrice", fees = "MeasureFees", feesSeries = "MeasureFeesSeries", klines = "MeasureKlines",
+  lend = "MeasureLend", lend143 = "MeasureLend143", sum146 = "MeasureSum146", sum1 = "MeasureSum1", sum56 = "MeasureSum56",
+  sum143 = "MeasureSum143", rewards = "MeasureRewards", points = "MeasurePoints", pos146 = "MeasurePos146",
+  pos1 = "MeasurePos1", pos56 = "MeasurePos56", puts = "MeasurePuts", rank = "MeasureRank"
 }
-local WALLET_KEYS = { "lend", "lend143", "sum146", "sum1", "sum56", "sum143", "rewards", "points", "pos146", "pos1", "pos56", "puts" }
+-- the parts of /mm/lend the skin never reads: dropped unparsed, which keeps the 500 KB body cheap to decode
+local LEND_SKIP = { series = true, assets = true, userTransactions = true, marketsSummary = true,
+  circuitBreakerParams = true, chainData = true, globalMetrics = true }
+local LEND_IDLE_RATE = 600 -- WebParser updates (seconds at Update=1000) between /mm/lend fetches while nothing is borrowed
 
-local function skinPath(rel) return SK:MakePathAbsolute(rel) end
 local function resource(rel) return SK:ReplaceVariables("#@#" .. rel) end
 
 local function readFile(path)
@@ -492,7 +551,7 @@ end
 
 local function set(meter, option, value) SK:Bang("!SetOption", meter, option, value) end
 -- API text must not be interpreted as Rainmeter variables/measure references
-local function clean(t) return (tostring(t):gsub("[#%[%]\r\n]", " ")) end
+local function clean(t) return ((tostring(t):gsub("[#%[%]\r\n]", " "):gsub("\001", INF_REF))) end
 local function setText(meter, text, color)
   set(meter, "Text", clean(text))
   if color then set(meter, "FontColor", color) end
@@ -560,7 +619,8 @@ end
 
 local function stale(key)
   local t = S.ts[key]
-  return t ~= nil and now() - t > 3 * cfg.refresh
+  local every = (key == "lend" and S.lendRate) or cfg.refresh
+  return t ~= nil and now() - t > 3 * every
 end
 
 local function deltaColor(v)
@@ -628,7 +688,8 @@ function M.render()
   local ts = 0
   for _, v in pairs(S.ts) do if v > ts then ts = v end end
   if not anyData then
-    setText("MeterStatus", t - S.startedAt > 20 and "offline" or "loading...", C_FAINT)
+    local failed = S.err.price or S.err.fees or t - S.startedAt > 20
+    setText("MeterStatus", failed and "offline" or "loading...", C_FAINT)
   elseif stale("price") or stale("fees") or (cfg.wallet ~= "" and stale("lend")) then
     setText("MeterStatus", "stale " .. os.date("%H:%M", ts), C_AMBER)
   else
@@ -735,8 +796,8 @@ local function notifyDesktop(title, body, level)
   if not cfg.notify then return end
   -- text goes through a file so no quoting can break the command line
   if not writeFile(resource("Notify.txt"), title .. "\n" .. body .. "\n" .. level .. "\n") then return end
-  SK:Bang('["powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' .. resource("Notify.ps1") ..
-    '" "' .. resource("Notify.txt") .. '"]')
+  -- #@# is expanded by Rainmeter itself, so the paths stay Unicode-safe on the command line
+  SK:Bang('["powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "#@#Notify.ps1" "#@#Notify.txt"]')
 end
 
 local function evaluateAlerts()
@@ -754,9 +815,12 @@ end
 -- ---------------------------------------------------------------- rank search (leaderboard is sorted by points)
 local rank = { active = false }
 
+-- One fetch per page: set the page, enable the measure, reset its UpdateRate counter ("Update" also drops a fetch
+-- still in flight for the previous page) and update it now, which re-reads the URL (DynamicVariables=1) and fetches.
 local function rankProbe()
   SK:Bang("!SetVariable", "RankPage", tostring(rank.page))
   SK:Bang("!EnableMeasure", "MeasureRank")
+  SK:Bang("!CommandMeasure", "MeasureRank", "Update")
   SK:Bang("!UpdateMeasure", "MeasureRank")
 end
 
@@ -774,6 +838,9 @@ local function rankStart()
 end
 
 local function rankStep(body)
+  -- an answer for another page (a late response from an earlier probe) is not this step's answer
+  local pg = body and body.data and body.data.pagination and tonumber(body.data.pagination.page)
+  if pg and pg ~= rank.page then return false end
   local r = rankInPage(body, cfg.wallet, S.points.total)
   if r.found then
     S.rank = { rank = r.rank, total = r.total }
@@ -794,9 +861,27 @@ local function rankStep(body)
 end
 
 -- ---------------------------------------------------------------- data callbacks
+-- the JSON body the key's WebParser measure captured (its string value once FinishAction fires)
+local JSON_NULL = {} -- the body was the JSON literal null (the positions endpoint's answer for "no positions")
 local function load(key)
-  local txt = readFile(skinPath("DownloadFile\\" .. FILES[key]))
-  return txt and jsonDecode(txt) or nil
+  local m = MEASURES[key] and SK:GetMeasure(MEASURES[key])
+  if not m then return nil end
+  local txt = m:GetStringValue()
+  if type(txt) == "string" and txt:match("^%s*null%s*$") then return JSON_NULL end
+  return jsonDecode(txt, key:sub(1, 4) == "lend" and LEND_SKIP or nil)
+end
+
+-- /mm/lend is the heavy call: every RefreshSeconds while anything is borrowed (health factor alerts), every
+-- LEND_IDLE_RATE seconds otherwise. UpdateRate counts measure updates, one per second at Update=1000.
+local function tuneLendRate()
+  if not S.lend then return end -- decide on the all-chains answer, never on Monad alone
+  local debt = false
+  for _, c in ipairs(lendList() or {}) do if c.debtUsd and c.debtUsd > 0.01 then debt = true end end
+  local rate = debt and cfg.refresh or math.max(cfg.refresh, LEND_IDLE_RATE)
+  if rate ~= S.lendRate then
+    S.lendRate = rate
+    for _, m in ipairs({ "MeasureLend", "MeasureLend143" }) do SK:Bang("!SetOption", m, "UpdateRate", tostring(rate)) end
+  end
 end
 
 -- parse(body) -> value or nil (nil = unusable, keep the last good value)
@@ -814,6 +899,7 @@ function M.ingest(key, body)
     return
   end
   local parse = PARSE[key]
+  if body == JSON_NULL then body = (key:sub(1, 3) == "pos") and {} or nil end
   if not parse or body == nil then return end
   local v = parse(body)
   if key == "puts" then
@@ -824,60 +910,95 @@ function M.ingest(key, body)
     S[key] = v
   end
   S.ts[key] = now()
-  if key == "lend" or key == "lend143" then evaluateAlerts() end
+  S.err[key] = nil
+  if key == "lend" or key == "lend143" then evaluateAlerts(); tuneLendRate() end
   if key == "points" then rankStart() end
   M.render()
 end
 
+-- Every entry point Rainmeter calls goes through guard(): a Lua error is logged (Manage > Log) and shown in the
+-- status corner instead of silently leaving the skin on "loading...".
+local function guard(name, fn, ...)
+  local ok, err = pcall(fn, ...)
+  if ok then return err end
+  local msg = "FlyingTulip " .. name .. " failed: " .. tostring(err)
+  if not (SK and pcall(function() SK:Bang("!Log", clean(msg), "Error") end)) then print(msg) end
+  if SK then
+    pcall(function()
+      SK:Bang("!SetOption", "MeterStatus", "Text", "script error, see log")
+      SK:Bang("!SetOption", "MeterStatus", "FontColor", C_RED)
+      SK:Bang("!UpdateMeter", "MeterStatus")
+      SK:Bang("!Redraw")
+    end)
+  end
+end
+M.guard = guard
+
 function OnData(key)
-  if not S then return end
-  M.ingest(key, load(key))
+  guard("OnData(" .. tostring(key) .. ")", function()
+    if not S then return end
+    M.ingest(key, load(key))
+  end)
 end
 
 function OnError(key)
   -- keep the last value; it is dimmed and flagged stale once older than 3 refresh intervals
-  if key == "rank" and rank.active then rankStop() end
+  guard("OnError(" .. tostring(key) .. ")", function()
+    if not S then return end
+    S.err[key] = now()
+    if key == "rank" and rank.active then rankStop() end
+    M.render()
+  end)
 end
+
+-- InputText's OnDismissAction (Escape or a click elsewhere): put the banner back
+function Render() guard("Render", M.render) end
 
 -- ---------------------------------------------------------------- wallet input
 function SetWallet(text)
-  local t = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-  if t ~= "" and normalizeWallet(t) == "" then
-    SK:Bang("!SetOption", "MeterBanner", "Text", "Not a valid address (0x + 40 hex characters)")
-    SK:Bang("!SetOption", "MeterBanner", "FontColor", C_RED)
-    SK:Bang("!UpdateMeter", "MeterBanner")
-    SK:Bang("!Redraw")
-    return
-  end
-  SK:Bang("!WriteKeyValue", "Variables", "Wallet", t == "" and "" or normalizeWallet(t), resource("Settings.inc"))
-  for _, key in ipairs(WALLET_KEYS) do os.remove(skinPath("DownloadFile\\" .. FILES[key])) end
-  os.remove(skinPath("DownloadFile\\" .. FILES.rank))
-  os.remove(resource("State.txt"))
-  SK:Bang("!Refresh")
+  guard("SetWallet", function()
+    local t = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if t ~= "" and normalizeWallet(t) == "" then
+      SK:Bang("!SetOption", "MeterBanner", "Text", "Not a valid address (0x + 40 hex characters)")
+      SK:Bang("!SetOption", "MeterBanner", "FontColor", C_RED)
+      SK:Bang("!UpdateMeter", "MeterBanner")
+      SK:Bang("!Redraw")
+      return
+    end
+    -- the file path is left as #@# for Rainmeter to expand, so a non-ASCII profile path still works
+    SK:Bang("!WriteKeyValue", "Variables", "Wallet", t == "" and "" or normalizeWallet(t), "#@#Settings.inc")
+    os.remove(resource("State.txt"))
+    SK:Bang("!Refresh")
+  end)
 end
 
 -- ---------------------------------------------------------------- skin lifecycle
 function Initialize()
-  cfg = buildConfig()
-  S = { ts = {}, startedAt = now() }
-  rank = { active = false }
-  loadAlertState()
+  guard("Initialize", function()
+    SK = SKIN
+    cfg = buildConfig()
+    S = { ts = {}, err = {}, startedAt = now(), lendRate = cfg.refresh }
+    rank = { active = false }
+    loadAlertState()
+  end)
 end
 
 -- called by the skin's OnRefreshAction once every meter and measure exists
 function OnLoaded()
-  if cfg.wallet ~= "" then
-    SK:Bang("!EnableMeasureGroup", "Account")
-  else
-    SK:Bang("!DisableMeasureGroup", "Account")
-  end
-  M.render()
+  guard("OnLoaded", function()
+    if cfg.wallet ~= "" then
+      SK:Bang("!EnableMeasureGroup", "Account")
+    else
+      SK:Bang("!DisableMeasureGroup", "Account")
+    end
+    M.render()
+  end)
 end
 
 local ticks = 0
 function Update()
   ticks = ticks + 1
-  if S and ticks % 30 == 0 then M.render() end       -- ages the "updated" label and dims stale values
+  if S and ticks % 30 == 0 then guard("Update", M.render) end -- ages the "updated" label and dims stale values
   return 0
 end
 
