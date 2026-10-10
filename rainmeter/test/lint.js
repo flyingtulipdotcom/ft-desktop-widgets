@@ -35,6 +35,12 @@ const bangTargets = new Set([...JSON.stringify(main).matchAll(/CommandMeasure (M
 for (const m of [...bangTargets, ...[...lua.matchAll(/"(Measure[A-Za-z0-9]+)"/g)].map(x => x[1])])
   ok(m in main.sections || m in data.sections, "bang targets missing measure " + m)
 
+// every text/image/shape meter except the background, buttons and the wallet input links to a public page
+for (const [n, s] of Object.entries(main.sections)) {
+  if (!n.startsWith("Meter") || n === "MeterBackground" || n.startsWith("MeterBtn") || n === "MeterInput") continue
+  ok(/^\["https:\/\/flyingtulip\.com\/[^"]*"\]$/.test(s.LeftMouseUpAction || ""), n + " has no flyingtulip.com link")
+}
+
 // every download measure maps to a key the Lua parses, with a unique file, and no key is orphaned
 const files = {}, keys = new Set()
 for (const [n, s] of Object.entries(data.sections)) {

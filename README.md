@@ -9,7 +9,7 @@ Menu bar and desktop widgets that put [Flying Tulip](https://flyingtulip.com) on
 - **For a wallet you set (optional)**: lowest health factor across chains (infinity with no debt; liquidation starts
   below 1.25; a warning notification at or below 1.40 and a critical one at or below 1.30, once per crossing with a
   cooldown), unrealized PnL, total FT earned, points and rank, ftPUT gain, open positions
-- A link to the [Flying Tulip dashboard](https://flyingtulip.com/statistics/)
+- Links to flyingtulip.com: every dropdown line (xbar/SwiftBar) and every meter (Rainmeter) opens its page, e.g. the FT-ftUSD market, statistics, lend dashboard, trade portfolio, rewards and ftPUT. The menu bar title itself only opens the dropdown.
 
 All data comes from the public Flying Tulip API (`https://api.flyingtulip.com`). No API keys, no RPC, no private data.
 The widgets only read data for the public address you give them and never send transactions or ask for a key.

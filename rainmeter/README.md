@@ -78,3 +78,11 @@ What is and is not covered: [TESTING.md](TESTING.md).
 Informational only, not financial advice; figures can be delayed, incomplete or wrong; notifications can be late or
 missed; provided "as is" (see [../LICENSE](../LICENSE)). MIT. The Flying Tulip name and logo are trademarks of Flying
 Tulip and are not covered by the MIT license.
+
+## Links
+
+Every meter opens its page on flyingtulip.com: the header and footer open the home page, the FT price
+meters and chart the FT-ftUSD spot market on the chain you set in `PriceChainId`, fees and the fees chart
+the statistics page, health factor the lend dashboard, PnL and positions the trade portfolio (each position
+row opens that market on its own chain), FT earned the rewards page, points the leaderboard and ftPUT the
+ftPUT positions page.

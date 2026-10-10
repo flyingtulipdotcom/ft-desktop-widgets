@@ -3,7 +3,14 @@
 -- Public API only: https://api.flyingtulip.com. No keys, no RPC.
 
 local API = "https://api.flyingtulip.com"
-local STATS_URL = "https://flyingtulip.com/statistics/"
+local SITE = "https://flyingtulip.com/"
+local PORTFOLIO_URL = SITE .. "trade/portfolio/"
+-- Spot market page for a symbol such as "FT-ftUSD" on a chain id.
+local function marketUrl(symbol, chainId)
+  local q = "symbol=" .. tostring(symbol or "FT-ftUSD"):gsub("[^%w%-_.~]", function(c) return string.format("%%%02X", c:byte()) end)
+  if tonumber(chainId) and tonumber(chainId) > 0 then q = q .. "&chainId=" .. string.format("%d", tonumber(chainId)) end
+  return SITE .. "trade/?" .. q .. "&marketType=spot"
+end
 local DEFAULT_LIQ_HF = 1.25
 local HF_CHAINS = { [146] = "Sonic", [1] = "Ethereum", [56] = "BNB", [143] = "Monad" }
 local HF_ORDER = { 146, 1, 56, 143 }
@@ -372,7 +379,8 @@ local function parsePositions(body)
       out[#out + 1] = { symbol = tostring(sym), side = (tostring(p.side or ""):lower() == "short") and "short" or "long",
         size = size, mark = mark, pnlUsd = num(p.pnlAmount), pnlPct = num(p.pnlPct),
         leverage = num(p.blendedLeverage) or num(p.leverage), valueUsd = mark and size * mark or 0,
-        network = p.network or HF_CHAINS[tonumber(p.chainId)] or tostring(p.chainId) }
+        network = p.network or HF_CHAINS[tonumber(p.chainId)] or tostring(p.chainId),
+        chainId = tonumber(p.chainId), market = tostring(p.symbol or "") }
     end
   end
   return out
@@ -489,6 +497,7 @@ local function setText(meter, text, color)
   set(meter, "Text", clean(text))
   if color then set(meter, "FontColor", color) end
 end
+local function link(meter, url) set(meter, "LeftMouseUpAction", '["' .. url .. '"]') end
 local function dim(color) return (color:gsub(",%d+$", ",120")) end
 
 local function now() return os.time() end
@@ -638,7 +647,9 @@ function M.render()
     setText("MeterBanner", "", C_AMBER)
   end
 
-  -- market
+  -- market: the FT price meters open the FT-ftUSD spot page on the chain being shown
+  local mkt = marketUrl("FT-ftUSD", cfg.priceChain)
+  for _, m in ipairs({ "MeterMarketHead", "MeterPriceLbl", "MeterPriceVal", "MeterPriceChartLabel", "MeterPriceChart" }) do link(m, mkt) end
   if S.price then
     local ch = S.price.changePct24h
     local c = stale("price") and dim(deltaColor(ch)) or deltaColor(ch)
@@ -706,9 +717,10 @@ function M.render()
         if p then
           local lev = (p.leverage and p.leverage > 0) and string.format(p.leverage >= 10 and " %.0fx" or " %.1fx", p.leverage) or ""
           setText("MeterPos" .. i, string.format("%s %s%s  %s  %s", p.symbol, p.side, lev, p.network, fmtSignedUsd(p.pnlUsd)), deltaColor(p.pnlUsd))
-        else setText("MeterPos" .. i, "") end
+          link("MeterPos" .. i, marketUrl(p.market, p.chainId))
+        else setText("MeterPos" .. i, ""); link("MeterPos" .. i, PORTFOLIO_URL) end
       end
-      if #pos > POS_ROWS then setText("MeterPos" .. POS_ROWS, string.format("+%d more (see dashboard)", #pos - POS_ROWS + 1), C_FAINT) end
+      if #pos > POS_ROWS then setText("MeterPos" .. POS_ROWS, string.format("+%d more (see portfolio)", #pos - POS_ROWS + 1), C_FAINT); link("MeterPos" .. POS_ROWS, PORTFOLIO_URL) end
     else
       setText("MeterPosHead", "Positions: unavailable", C_FAINT)
       for i = 1, POS_ROWS do setText("MeterPos" .. i, "") end

@@ -139,6 +139,22 @@ ok("wallet: HF, PnL, FT earned, points+rank, ftPUT, positions", () => {
   assert(out.includes("0x0000…dead".replace("dead", "dEaD").toLowerCase()) || out.includes("0x0000…dead"))
   assert(!out.includes("Wallet is not"))
 })
+ok("every dropdown line links to a real flyingtulip.com page", () => {
+  const w = world(), out = M.main(w.io, args({ wallet: DEAD }), NOW), lines = out.split("\n").slice(1).filter(l => l !== "---")
+  for (const l of lines) assert(/ (href|shell|refresh)=/.test(l.replace(/^[^|]*\|/, " ")), "no link: " + l)
+  const href = l => (l.match(/href=(\S+)/) || [])[1]
+  const find = s => lines.find(l => l.includes(s))
+  assert.equal(href(find("FT price")), "https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=1&marketType=spot")
+  assert.equal(href(find("Fees 24h")), "https://flyingtulip.com/statistics/")
+  assert.equal(href(find("Health ")), "https://flyingtulip.com/lend/dashboard/")
+  assert.equal(href(find("PnL ")), "https://flyingtulip.com/trade/portfolio/")
+  assert.equal(href(find("FT earned")), "https://flyingtulip.com/rewards/")
+  assert.equal(href(find("Points ")), "https://flyingtulip.com/rewards/leaderboard/")
+  assert.equal(href(find("ftPUT ")), "https://flyingtulip.com/allocation/positions/")
+  assert.equal(href(find("Open flyingtulip.com")), "https://flyingtulip.com/")
+  const pos = lines.find(l => /^--\S+ (long|short)/.test(l)); assert(/href=https:\/\/flyingtulip\.com\/trade\/\?symbol=\S+&chainId=\d+&marketType=spot/.test(pos), pos)
+  const imgs = lines.filter(l => l.includes("image=")); assert(imgs.length >= 2 && imgs.every(l => /href=https:\/\/flyingtulip\.com\//.test(l)))
+})
 ok("no debt anywhere shows infinity", () => {
   const w = world(); const orig = w.io.fetchAll
   w.io.fetchAll = urls => orig(urls).map((b, i) => (/mm\/lend\?user=[^&]*$/.test(urls[i]) ? JSON.stringify({ data: { chains: [{ chainId: 146, userMetrics: { totalDebtUsd: 0, healthFactor: 0 } }] } }) : b))

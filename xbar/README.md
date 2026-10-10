@@ -11,7 +11,7 @@ Menu bar: the Flying Tulip logo, FT price, 24h fees and, when a wallet is set, h
 The title turns amber at or below the warning health factor and red at or below the critical one, and a macOS
 notification is shown on each crossing. The dropdown groups the rest: market (price, fees by product, 31-day fees bars,
 30-day FT price line), account (health factor per chain, PnL, FT earned, points and rank, ftPUT gain, positions),
-refresh, "Open dashboard", and "Set wallet...".
+refresh, "Open flyingtulip.com", and "Set wallet...".
 
 Data comes only from `https://api.flyingtulip.com`. No keys, no RPC.
 
