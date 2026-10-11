@@ -51,7 +51,7 @@ shoot_tab() {
   if [ "$tab" = market ]; then cp "$OUT/menubar-title.png" "$OUT/menubar-title-market.png"; fi
   cliclick m:"$mid",12 >>"$OUT/click.log" 2>&1; sleep 1
   cliclick c:"$mid",12 >>"$OUT/click.log" 2>&1; sleep 4
-  screencapture -x -R"$left,0,600,820" "$OUT/panel-$tab.png" 2>>"$OUT/screencapture.log" || log "screencapture $tab failed"
+  screencapture -x -R"$left,0,600,980" "$OUT/panel-$tab.png" 2>>"$OUT/screencapture.log" || log "screencapture $tab failed"
   screencapture -x "$OUT/full-$tab.png" 2>>"$OUT/screencapture.log" || true
   cliclick kp:esc >/dev/null 2>&1 || true
   pkill -x FlyingTulip 2>/dev/null || true

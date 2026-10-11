@@ -72,7 +72,7 @@ struct LineArea: View {
                 .chartYScale(domain: dLo...dHi)
                 .chartXAxis(.hidden)
                 .chartYAxis {
-                    AxisMarks(position: .leading, values: [dLo, (dLo + dHi) / 2, dHi]) { _ in
+                    AxisMarks(position: .leading, values: [(dLo + dHi) / 2]) { _ in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3])).foregroundStyle(Color.white.opacity(0.08))
                     }
                 }

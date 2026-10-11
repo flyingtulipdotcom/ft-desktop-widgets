@@ -33,7 +33,7 @@ struct PanelView: View {
                 .background(GeometryReader { g in Color.clear.preference(key: ContentHeightKey.self, value: g.size.height) })
             }
             .onPreferenceChange(ContentHeightKey.self) { contentH = $0 }
-            .frame(height: min(max(contentH, 120), 680))
+            .frame(height: min(max(contentH, 120), 780))
             Rectangle().fill(Theme.border).frame(height: 1)
             footer
         }
