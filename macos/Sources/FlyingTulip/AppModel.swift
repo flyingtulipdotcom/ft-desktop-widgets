@@ -79,14 +79,14 @@ final class AppModel: ObservableObject {
     func start() {
         stats.pageviewIfDue(walletCount: wallets.count, force: true)
         if settings.notifications && !wallets.isEmpty { notifier.requestAuthorization() }
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in await self?.refresh(rotate: true) }
+        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
+            Task { @MainActor in await AppModel.shared.refresh(rotate: true) }
         }
         let nc = NotificationCenter.default
-        observers.append(nc.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] note in
+        observers.append(nc.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
             guard let w = note.object as? NSWindow else { return }
             if String(describing: type(of: w)).contains("MenuBarExtra") {
-                Task { @MainActor in self?.panelOpened() }
+                Task { @MainActor in AppModel.shared.panelOpened() }
             }
         })
         Task { await refresh(rotate: false) }
