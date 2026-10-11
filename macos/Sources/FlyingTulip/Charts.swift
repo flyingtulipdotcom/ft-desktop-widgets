@@ -23,7 +23,7 @@ struct BarChart: View {
                     }
                 }
                 .chartXScale(domain: values.indices.map { String($0) })
-                .chartYScale(domain: 0...(maxV * 1.04))
+                .chartYScale(domain: 0...(maxV * 1.28))
                 .chartXAxis(.hidden)
                 .chartYAxis {
                     AxisMarks(position: .leading, values: [0, maxV / 2, maxV]) { _ in
