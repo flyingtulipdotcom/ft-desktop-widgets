@@ -24,14 +24,45 @@ The widgets only read data for the public address you give them and never send t
 |---|---|---|
 | macOS | Native menu bar app (SwiftUI) | [`macos/`](macos) |
 | macOS | xbar and SwiftBar plugin (the alternative) | [`xbar/`](xbar) |
-| Windows | Rainmeter skin | [`rainmeter/`](rainmeter) |
+| Windows | Windows 11 Widgets Board widget | [`windows-widget/`](windows-widget) |
+| Windows | Rainmeter skin (Windows 10, or no Widgets Board) | [`rainmeter/`](rainmeter) |
 
-## Install on macOS
+## Install
 
-Two ways, the same data and alerts:
+One line per OS. Each picks the native widget when the machine supports it and says why when it falls back.
 
-1. **Native app** (macOS 13 or later): download the `.dmg` from the [releases page](https://github.com/flyingtulipdotcom/ft-desktop-widgets/releases) (look for `macos-v…`), drag Flying Tulip to Applications and open it. It is not notarized yet, so the first time use right-click > Open, or System Settings > Privacy & Security > Open Anyway. Details in [macos/README.md](macos/README.md).
-2. **xbar or SwiftBar plugin**: one script, see [xbar/README.md](xbar/README.md).
+**Windows** (PowerShell):
+
+    irm https://raw.githubusercontent.com/flyingtulipdotcom/ft-desktop-widgets/main/rainmeter/install.ps1 | iex
+
+- Windows 11 with the Widgets Board: installs the native widget from the newest `windows-widget-v*` release. The test
+  build is signed with a self-signed certificate, so the script asks for ONE administrator prompt to trust it (it adds
+  the certificate to the Trusted People store and nothing else), installs the Windows App Runtime if missing, then the
+  package. Add it with **Win+W, Add widgets (+), Flying Tulip**.
+- Windows 10, Windows Server, no Widgets Board, a declined administrator prompt, or any failed step: installs the
+  Rainmeter skin instead (Rainmeter must be installed), and prints the reason.
+- Force one: `$env:FT_WIDGET = "native"` (no fallback, errors are shown) or `$env:FT_WIDGET = "rainmeter"`, set before
+  the line above. Re-running upgrades in place.
+
+**macOS** (Terminal):
+
+    curl -fsSL https://raw.githubusercontent.com/flyingtulipdotcom/ft-desktop-widgets/main/xbar/install.sh | bash
+
+- macOS 13 or later: installs the native menu bar app from the newest `macos-v*` release into `/Applications`
+  (`~/Applications` if that is not writable), opens it and tells you it lives in the menu bar. The app is not notarized
+  yet; a download made by curl is not quarantined so macOS does not prompt, and the script clears the quarantine flag if
+  one is present. If the old xbar/SwiftBar plugin is installed it offers to remove it so you do not get two Flying Tulip
+  items (default: keep it and print the `rm` command; `FT_REMOVE_XBAR=1` removes it without asking).
+- macOS 12 or older, or any failed step: installs the xbar/SwiftBar plugin instead (xbar or SwiftBar must be installed),
+  and prints the reason.
+- Force one: `curl -fsSL <url> | FT_WIDGET=xbar bash` (the plugin) or `FT_WIDGET=native` (the app, no fallback).
+  Re-running upgrades in place.
+
+Both scripts download from this repository's GitHub releases, verify the files against the release's `SHA256SUMS`
+(and stop without installing anything on a mismatch), contain no secrets and send nothing themselves. They are short
+enough to read before you run them. Manual install steps are in [macos/README.md](macos/README.md),
+[windows-widget/README.md](windows-widget/README.md), [xbar/README.md](xbar/README.md) and
+[rainmeter/README.md](rainmeter/README.md).
 
 On Linux, see the [Omarchy bar plugin](https://github.com/flyingtulipdotcom/omarchy-ft-bar).
 
