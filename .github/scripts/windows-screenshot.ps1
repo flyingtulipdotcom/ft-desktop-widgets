@@ -59,7 +59,7 @@ Log "waiting for the data"
 Start-Sleep -Seconds 35
 
 # The skin's own window, drawn by PrintWindow (works for layered windows even when the desktop capture is blank).
-Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
+Add-Type -ReferencedAssemblies System.Drawing, System.Windows.Forms -TypeDefinition @"
 using System; using System.Text; using System.Drawing; using System.Collections.Generic; using System.Runtime.InteropServices;
 public static class Win {
   public delegate bool EnumProc(IntPtr h, IntPtr l);
@@ -104,6 +104,14 @@ function Shot($name) {
   $crop.Save((Join-Path $out "$name-desktop.png"), [System.Drawing.Imaging.ImageFormat]::Png)
   $g.Dispose(); $bmp.Dispose(); $crop.Dispose()
 }
+# the whole screen, small, to see what else is on it
+$b0 = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$full = New-Object System.Drawing.Bitmap $b0.Width, $b0.Height
+$gf = [System.Drawing.Graphics]::FromImage($full)
+$gf.CopyFromScreen($b0.Location, [System.Drawing.Point]::Empty, $b0.Size, ([System.Drawing.CopyPixelOperation]::SourceCopy -bor [System.Drawing.CopyPixelOperation]::CaptureBlt))
+$small = New-Object System.Drawing.Bitmap $full, ([int]($b0.Width / 3)), ([int]($b0.Height / 3))
+$small.Save((Join-Path $out "screen-small.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+$gf.Dispose(); $full.Dispose(); $small.Dispose()
 Shot "rainmeter-account"
 foreach ($tab in @("market", "positions")) {
   & $rm "!CommandMeasure" "MeasureScript" "ShowTab('$tab')" "FlyingTulip"

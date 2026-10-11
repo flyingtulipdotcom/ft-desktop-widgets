@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run the skin in Rainmeter and screenshot it
-        shell: pwsh
+        shell: powershell
         run: ./.github/scripts/windows-screenshot.ps1
       - name: Upload screenshots and the Rainmeter log
         if: always()
