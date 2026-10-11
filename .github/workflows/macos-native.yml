@@ -1,0 +1,177 @@
+name: macOS native app
+
+# Builds the native menu bar app (macos/), runs its unit tests, produces a zipped .app and a .dmg, and screenshots the
+# panel on each tab on a real macOS runner. A signing + notarization job runs only when the Apple secrets exist.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "macos/**"
+      - ".github/workflows/macos-native.yml"
+      - ".github/scripts/macos-native-screenshot.sh"
+  push:
+    branches: [main]
+    paths:
+      - "macos/**"
+      - ".github/workflows/macos-native.yml"
+      - ".github/scripts/macos-native-screenshot.sh"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  VERSION: "2.0.0"
+
+jobs:
+  test:
+    runs-on: macos-14
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Unit tests
+        working-directory: macos
+        run: swift test 2>&1 | tee ../swift-test.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: swift-test-log
+          path: swift-test.log
+
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      # A wallet from the public points leaderboard (api.flyingtulip.com/points/leaderboard).
+      FT_CI_WALLET: "0x38A564A38Be5DFb6eF2AB765dA1e4397d03C2D62"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the app (ad-hoc signed)
+        run: macos/scripts/build-app.sh
+      - name: Make the .dmg and .zip
+        run: macos/scripts/make-dmg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlyingTulip-macos-adhoc
+          path: |
+            macos/dist/*.dmg
+            macos/dist/*.zip
+      - name: Screenshot the panel on each tab
+        run: bash .github/scripts/macos-native-screenshot.sh
+      - name: Upload screenshots and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-native-screenshots
+          path: out-native/
+          if-no-files-found: warn
+      - name: Publish screenshots to the ci-screenshots branch and show them inline
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -u
+          shopt -s nullglob
+          pngs=(out-native/menubar-title.png out-native/panel-*.png)
+          [ ${#pngs[@]} -gt 0 ] || { echo "no screenshots"; exit 0; }
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@users.noreply.github.com"
+          pub="$RUNNER_TEMP/pub"
+          rm -rf "$pub"
+          if git ls-remote --exit-code --heads "https://github.com/$REPO" ci-screenshots >/dev/null 2>&1; then
+            git clone --quiet --depth 1 --branch ci-screenshots "https://x-access-token:$GH_TOKEN@github.com/$REPO" "$pub"
+          else
+            git init --quiet -b ci-screenshots "$pub"
+            git -C "$pub" remote add origin "https://x-access-token:$GH_TOKEN@github.com/$REPO"
+          fi
+          mkdir -p "$pub/native-$RUN_ID"
+          cp "${pngs[@]}" "$pub/native-$RUN_ID/"
+          git -C "$pub" add "native-$RUN_ID"
+          git -C "$pub" commit --quiet -m "native app screenshots for run $RUN_ID"
+          for i in 1 2 3; do
+            git -C "$pub" push --quiet origin ci-screenshots && break
+            git -C "$pub" pull --quiet --rebase origin ci-screenshots
+          done
+          base="https://raw.githubusercontent.com/$REPO/ci-screenshots/native-$RUN_ID"
+          {
+            echo "## macOS native app screenshots"
+            echo
+            for f in menubar-title panel-market panel-account panel-positions; do
+              [ -f "out-native/$f.png" ] || continue
+              echo "### $f"
+              echo
+              echo "![$f]($base/$f.png)"
+              echo
+            done
+          } | tee body.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --repo "$REPO" --body-file body.md
+          fi
+
+  # Runs only when the Apple Developer ID secrets exist: APPLE_DEVELOPER_ID_CERT_P12 (base64 of the .p12),
+  # APPLE_CERT_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD.
+  sign-notarize:
+    runs-on: macos-14
+    needs: [test, build]
+    timeout-minutes: 45
+    env:
+      APPLE_DEVELOPER_ID_CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+      APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - name: Check for signing secrets
+        id: gate
+        run: |
+          if [ -n "$APPLE_DEVELOPER_ID_CERT_P12" ] && [ -n "$APPLE_CERT_PASSWORD" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Apple signing secrets are not set: skipping signing and notarization."
+          fi
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.enabled == 'true'
+      - name: Import the Developer ID certificate
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KCPASS="$(uuidgen)"
+          echo "$APPLE_DEVELOPER_ID_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KCPASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KCPASS" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KC"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KCPASS" "$KC"
+          security list-keychains -d user -s "$KC" login.keychain
+          IDENTITY="$(security find-identity -v -p codesigning "$KC" | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.+)"/\1/')"
+          [ -n "$IDENTITY" ] || { echo "no Developer ID Application identity in the certificate"; exit 1; }
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/cert.p12"
+      - name: Build, sign (hardened runtime) and package
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          macos/scripts/build-app.sh
+          macos/scripts/make-dmg.sh
+      - name: Notarize and staple
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          cd macos/dist
+          xcrun notarytool submit "FlyingTulip-$VERSION.dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "FlyingTulip-$VERSION.dmg"
+          xcrun stapler staple "Flying Tulip.app"
+          rm -f "FlyingTulip-$VERSION.zip"
+          ditto -c -k --keepParent "Flying Tulip.app" "FlyingTulip-$VERSION.zip"
+          spctl --assess --type execute --verbose "Flying Tulip.app" || true
+      - uses: actions/upload-artifact@v4
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          name: FlyingTulip-macos-notarized
+          path: |
+            macos/dist/*.dmg
+            macos/dist/*.zip
