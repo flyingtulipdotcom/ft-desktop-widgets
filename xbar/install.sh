@@ -59,7 +59,10 @@ sha256_of() { shasum -a 256 "$1" | awk '{print $1}'; }
 
 # Prints "tag|zip name|zip url|zip digest|SHA256SUMS url" for the newest macos-vX.Y.Z release that has a .zip.
 find_release() {
-  curl -fsSL -H "User-Agent: ft-desktop-widgets-installer" "$RELEASES_URL" -o "$tmp/releases.json" || return 1
+  local auth=()
+  # FT_GITHUB_TOKEN (optional, for CI or shared IPs hitting the anonymous API rate limit) is sent to the releases API only.
+  case "$RELEASES_URL" in https://api.github.com/*) [ -n "${FT_GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $FT_GITHUB_TOKEN") ;; esac
+  curl -fsSL --retry 2 -H "User-Agent: ft-desktop-widgets-installer" ${auth[@]+"${auth[@]}"} "$RELEASES_URL" -o "$tmp/releases.json" || return 1
   FT_JSON="$tmp/releases.json" osascript -l JavaScript -e '
     ObjC.import("Foundation");
     var env = $.NSProcessInfo.processInfo.environment;

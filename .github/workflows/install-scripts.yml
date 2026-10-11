@@ -17,6 +17,9 @@ on:
       - "xbar/install.sh"
       - ".github/workflows/install-scripts.yml"
 
+env:
+  FT_GITHUB_TOKEN: ${{ github.token }}
+
 permissions:
   contents: read
 
@@ -57,8 +60,11 @@ jobs:
         run: |
           New-Item -ItemType Directory mock | Out-Null
           ("0" * 64 + "  FlyingTulipWidget.msix") | Set-Content mock/SHA256SUMS
-          Invoke-WebRequest "https://api.github.com/repos/flyingtulipdotcom/ft-desktop-widgets/releases?per_page=100" -OutFile real.json -UseBasicParsing -Headers @{ "User-Agent" = "ci" }
-          jq 'map(if (.tag_name|startswith("windows-widget-v")) then .assets |= map(if .name=="SHA256SUMS" then .browser_download_url="http://127.0.0.1:8765/SHA256SUMS" else . end) else . end)' real.json | Set-Content mock/releases.json
+          Invoke-WebRequest "https://api.github.com/repos/flyingtulipdotcom/ft-desktop-widgets/releases?per_page=100" -OutFile real.json -UseBasicParsing -Headers @{ "User-Agent" = "ci"; "Authorization" = "Bearer ${{ github.token }}" }
+          @'
+          map(if (.tag_name|startswith("windows-widget-v")) then .assets |= map(if .name=="SHA256SUMS" then .browser_download_url="http://127.0.0.1:8765/SHA256SUMS" else . end) else . end)
+          '@ | Set-Content -Encoding ascii filter.jq
+          jq -f filter.jq real.json | Set-Content -Encoding ascii mock/releases.json
           $srv = Start-Process python -ArgumentList "-m","http.server","8765","--bind","127.0.0.1","--directory","mock" -PassThru -WindowStyle Hidden
           Start-Sleep 3
           try {
@@ -109,7 +115,7 @@ jobs:
         run: |
           mkdir mock
           echo "$(printf '0%.0s' $(seq 64))  FlyingTulip-2.0.0.zip" > mock/SHA256SUMS
-          curl -fsSL "https://api.github.com/repos/flyingtulipdotcom/ft-desktop-widgets/releases?per_page=100" -o real.json
+          curl -fsSL -H "Authorization: Bearer ${{ github.token }}" "https://api.github.com/repos/flyingtulipdotcom/ft-desktop-widgets/releases?per_page=100" -o real.json
           jq 'map(if (.tag_name|startswith("macos-v")) then .assets |= map(if .name=="SHA256SUMS" then .browser_download_url="http://127.0.0.1:8765/SHA256SUMS" else . end) else . end)' real.json > mock/releases.json
           python3 -m http.server 8765 --bind 127.0.0.1 --directory mock >/dev/null 2>&1 &
           srv=$!

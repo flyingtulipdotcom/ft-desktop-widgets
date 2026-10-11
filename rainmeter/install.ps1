@@ -13,6 +13,8 @@ $repo = "flyingtulipdotcom/ft-desktop-widgets"
 $releasesUrl = if ($env:FT_RELEASES_URL) { $env:FT_RELEASES_URL } else { "https://api.github.com/repos/$repo/releases?per_page=100" }
 $ftWidget = if ($env:FT_WIDGET) { $env:FT_WIDGET.Trim().ToLower() } else { "auto" }
 $headers = @{ "User-Agent" = "ft-desktop-widgets-installer" }
+# FT_GITHUB_TOKEN (optional, for CI or shared IPs hitting the anonymous API rate limit) is sent to the releases API only.
+if ($env:FT_GITHUB_TOKEN -and $releasesUrl -like "https://api.github.com/*") { $headers["Authorization"] = "Bearer $($env:FT_GITHUB_TOKEN)" }
 
 function Install-Rainmeter {
   $fallback = "https://github.com/$repo/releases/download/v1.4.0/FlyingTulip-1.4.0.rmskin"
