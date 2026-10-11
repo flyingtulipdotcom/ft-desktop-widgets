@@ -52,6 +52,14 @@ local ACCOUNT = {
   pos1 = "[]", pos56 = "[]",
   puts = '{"data":{"positions":[{"nft_id":"7","token_symbol":"USDT","token_decimals":6,"strike":"99960146","current_capital":"1000000000","current_ft":"9996014600000000000000","withdrawn_ft":"0"}]}}',
   points = '{"data":{"chains":[{"isAllChains":true,"userMetrics":{"totalPoints":922000}}]}}',
+  -- four finished days of cumulative FT earned (the clock is frozen at 1790000000)
+  hist = function()
+    local D, base = 86400, 1790000000 - (1790000000 % 86400)
+    local pts = {}
+    for i = 0, 3 do pts[#pts + 1] = string.format('{"timestampUnixSeconds":%d,"totalEarnedFtRaw":"%d000000000000000000","claimedFtRaw":"0"}', base - (4 - i) * D + D - 1, 100 + i * 10) end
+    return '{"data":{"points":[' .. table.concat(pts, ",") .. ']}}'
+  end,
+  ptsRows = '{"data":{"pointsBreakdown":[{"productLabel":"ftUSD","activityLabel":"Hold","positionUsd":5000,"multiplier":1}]}}',
 }
 local function keyFor(url)
   if url:find("/mm/spot/tickers", 1, true) then return "price" end
@@ -63,6 +71,8 @@ local function keyFor(url)
   c = url:match("/account/positions%?.*chainId=(%d+)"); if c then return "pos" .. c end
   if url:find("/account/dashboard", 1, true) then return "rewards" end
   if url:find("/points/leaderboard", 1, true) then return "rank" end
+  if url:find("/account/rewards/history", 1, true) then return "hist" end
+  if url:find("/points/breakdown", 1, true) then return "ptsRows" end
   if url:find("/points?", 1, true) then return "points" end
   if url:find("/tge/ftPUT/user/", 1, true) then return "puts" end
   error("unexpected URL " .. url)

@@ -3,7 +3,7 @@
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 $repo = "flyingtulipdotcom/ft-desktop-widgets"
-$fallback = "https://github.com/$repo/releases/download/v1.3.0/FlyingTulip-1.3.0.rmskin"
+$fallback = "https://github.com/$repo/releases/download/v1.4.0/FlyingTulip-1.4.0.rmskin"
 $rainmeter = @("$env:ProgramFiles\Rainmeter\Rainmeter.exe", "${env:ProgramFiles(x86)}\Rainmeter\Rainmeter.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $rainmeter) {
   Write-Host "Rainmeter not found. Install it first from https://www.rainmeter.net, then run this again."
@@ -15,7 +15,7 @@ try {
   $asset = $release.assets | Where-Object { $_.name -like "*.rmskin" } | Select-Object -First 1
   if ($asset) { $url = $asset.browser_download_url }
 } catch {
-  Write-Host "Could not look up the latest release, using v1.3.0."
+  Write-Host "Could not look up the latest release, using v1.4.0."
 }
 $file = Join-Path $env:TEMP ([IO.Path]::GetFileName(([Uri]$url).AbsolutePath))
 Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
