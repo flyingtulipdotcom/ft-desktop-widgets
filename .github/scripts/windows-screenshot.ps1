@@ -82,7 +82,12 @@ public static class Win {
     if (found == IntPtr.Zero) return null;
     RECT r; GetWindowRect(found, out r);
     var bmp = new Bitmap(Math.Max(1, r.R - r.L), Math.Max(1, r.B - r.T), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-    using (var g = Graphics.FromImage(bmp)) { g.Clear(Color.FromArgb(255, 32, 36, 44)); var dc = g.GetHdc(); PrintWindow(found, dc, 2); g.ReleaseHdc(dc); }
+    var clear = Color.FromArgb(255, 32, 36, 44);
+    using (var g = Graphics.FromImage(bmp)) { g.Clear(clear); var dc = g.GetHdc(); PrintWindow(found, dc, 2); g.ReleaseHdc(dc); }
+    // the window keeps the tallest tab's height: crop the empty rows under the panel
+    int last = bmp.Height - 1;
+    while (last > 10 && bmp.GetPixel(bmp.Width / 2, last).ToArgb() == clear.ToArgb()) last--;
+    if (last < bmp.Height - 1) { var c = bmp.Clone(new Rectangle(0, 0, bmp.Width, last + 2), bmp.PixelFormat); bmp.Dispose(); return c; }
     return bmp;
   }
 }
@@ -92,26 +97,8 @@ public static class Win {
 function Shot($name) {
   $skin = [Win]::Skin()
   if ($skin) { $skin.Save((Join-Path $out "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png); $skin.Dispose(); Log "shot $name (skin window)" }
-  else { Log "no skin window found" }
-  $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-  $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-  $g = [System.Drawing.Graphics]::FromImage($bmp)
-  # CaptureBlt: Rainmeter skins are layered windows, which a plain copy leaves out
-  $op = [System.Drawing.CopyPixelOperation]::SourceCopy -bor [System.Drawing.CopyPixelOperation]::CaptureBlt
-  $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size, $op)
-  $w = [Math]::Min(460, $b.Width - 10); $h = [Math]::Min(900, $b.Height - 10)
-  $crop = $bmp.Clone((New-Object System.Drawing.Rectangle 10, 10, $w, $h), $bmp.PixelFormat)
-  $crop.Save((Join-Path $out "$name-desktop.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-  $g.Dispose(); $bmp.Dispose(); $crop.Dispose()
+  else { Log "FAIL: no skin window found"; exit 1 }
 }
-# the whole screen, small, to see what else is on it
-$b0 = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-$full = New-Object System.Drawing.Bitmap $b0.Width, $b0.Height
-$gf = [System.Drawing.Graphics]::FromImage($full)
-$gf.CopyFromScreen($b0.Location, [System.Drawing.Point]::Empty, $b0.Size, ([System.Drawing.CopyPixelOperation]::SourceCopy -bor [System.Drawing.CopyPixelOperation]::CaptureBlt))
-$small = New-Object System.Drawing.Bitmap $full, ([int]($b0.Width / 3)), ([int]($b0.Height / 3))
-$small.Save((Join-Path $out "screen-small.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-$gf.Dispose(); $full.Dispose(); $small.Dispose()
 Shot "rainmeter-account"
 foreach ($tab in @("market", "positions")) {
   & $rm "!CommandMeasure" "MeasureScript" "ShowTab('$tab')" "FlyingTulip"

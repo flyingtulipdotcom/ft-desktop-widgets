@@ -49,6 +49,15 @@
 - `node tools/build_rmskin.js` builds the `.rmskin` (zip plus footer) and refuses to package a `Settings.inc` that has
   a wallet set.
 
+## Real Rainmeter on a Windows runner (CI)
+
+`.github/workflows/windows-screenshot.yml` runs on every change under `rainmeter/`: it installs the latest Rainmeter on
+a GitHub Windows runner, loads the skin with a public wallet from the points leaderboard (usage stats off, and the
+Plausible host blocked), waits for the data, and captures the skin's own window with `PrintWindow` for each tab. The
+screenshots are published on the `ci-screenshots` branch and shown in the run summary and on the pull request; the
+job fails if the skin window is missing or the Rainmeter log has a script or WebParser error. (A plain desktop capture
+comes out blank on the runner, which is why the window itself is captured.)
+
 ## Real Rainmeter under Wine (v1.0.1)
 
 Rainmeter 4.5.27 (portable install) ran headless under a portable Wine build and Xvfb. The skin had a temporary probe

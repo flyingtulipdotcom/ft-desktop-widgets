@@ -73,7 +73,7 @@ jobs:
           {
             echo "## Windows widget screenshots (Rainmeter)"
             echo
-            for f in rainmeter-account rainmeter-market rainmeter-positions rainmeter-account-desktop; do
+            for f in rainmeter-account rainmeter-market rainmeter-positions; do
               [ -f "out/$f.png" ] || continue
               echo "### $f"
               echo

@@ -61,7 +61,7 @@ function checkPng(b64, w, h) {
     if (type === "IHDR") { assert.equal(data.readUInt32BE(0), w); assert.equal(data.readUInt32BE(4), h); assert.equal(data[8], 4); assert.equal(data[9], 3) }
     p += 12 + len
   }
-  assert.deepEqual(seen, ["IHDR", "PLTE", "pHYs", "IDAT", "IEND"])
+  assert.deepEqual(seen, ["IHDR", "PLTE", "tRNS", "pHYs", "IDAT", "IEND"])
   const raw = zlib.inflateSync(Buffer.concat(idat))   // verifies the zlib header and adler32
   assert.equal(raw.length, (Math.ceil(w / 2) + 1) * h)
   return raw
@@ -69,6 +69,7 @@ function checkPng(b64, w, h) {
 ok("bar chart PNG is a valid PNG", () => checkPng(M.barChartPng(Array.from({ length: 31 }, (_, i) => i * 3 + 1)), 340, 76))
 ok("line chart PNG is a valid PNG", () => checkPng(M.lineChartPng(Array.from({ length: 30 }, (_, i) => 0.1 + Math.sin(i / 4) / 50)), 340, 76))
 ok("charts survive flat and single-spike data", () => { M.barChartPng([0, 0, 0]); M.lineChartPng([1, 1, 1]); M.barChartPng([5, 0, 0, 0]) })
+ok("health factor bar is a valid PNG", () => checkPng(M.hfBarPng(1.9, 1.25, 0), 240, 20))
 ok("logo is a PNG", () => assert.equal(Buffer.from(M.LOGO_B64, "base64").toString("latin1", 1, 4), "PNG"))
 if (process.env.DUMP_PNG) {
   fs.writeFileSync(process.env.DUMP_PNG + "/bars.png", Buffer.from(M.barChartPng(M.parseFeesSeries(fx("fees_series.json")).map(x => x.total)), "base64"))
@@ -136,7 +137,7 @@ ok("wallet: HF, PnL, FT earned, points+rank, ftPUT, positions", () => {
   const w = world(), out = M.main(w.io, args({ wallet: DEAD }), NOW)
   assert.deepEqual(validate(out), [])
   assert(/^\$0\.\d{4}  fees \$\S+  HF 1\.90 \|/.test(out.split("\n")[0]), out.split("\n")[0])
-  for (const s of ["Health      1.90  Sonic (lowest)", "PnL         +$10.50", "FT earned   153.0 FT", "rank #777 of 2,000", "Positions  1 open", "ftPUT       "])
+  for (const s of ["Health   1.90  Sonic (lowest)", "PnL   +$10.50", "FT earned   153.0 FT", "rank #777 of 2,000", "Positions  1 open", "ftPUT   ", "Sonic   1.90   debt $1.00k   equity $500 | size=12 image="])
     assert(out.includes(s), "missing: " + s + "\n" + out)
   assert(out.includes("0x0000…dead".replace("dead", "dEaD").toLowerCase()) || out.includes("0x0000…dead"))
   assert(!out.includes("Wallet is not"))
@@ -171,7 +172,7 @@ ok("FT earned and points rows say what they cover, with the breakdown in the sub
   const out = M.main(w.io, args({ wallet: DEAD }), NOW)
   assert.deepEqual(validate(out), [])
   for (const s of ["--FT earned   95.4 FT  all time", "--  sftUSD yield     95.4 FT  (claimed 95.4, pending 0)", "--  Lend FT rewards  0 FT", "--  By chain: Sonic 95.4",
-    "--Points      662K  all chains", "--  Ethereum  616K", "--  Sonic     45.8K", "one chain at a time", "Account    0x0000…dead  HF 1.90  95.4 FT  662K pts"])
+    "--Points   662K  all chains", "--  Ethereum   616K", "--  Sonic   45.8K", "one chain at a time", "Account    0x0000…dead  HF 1.90  95.4 FT  662K pts"])
     assert(out.includes(s), "missing: " + s + "\n" + out)
 })
 ok("every dropdown line links to a real flyingtulip.com page", () => {
@@ -369,7 +370,7 @@ ok("usage stats: every link runs the plugin with its element id; the click is co
   M.main(w.io, S({ cmd: "open", arg: "account-pnl", arg2: "https://flyingtulip.com/trade/portfolio/?a=" + DEAD }), NOW)
   const lc = named(w, "Link click"); assert.equal(lc.length, 1)
   assert.deepEqual(lc[0].body.props, { platform: "macos", version: M.WIDGET_VERSION, element: "account-pnl", url: "https://flyingtulip.com/trade/portfolio/?a=:address" })
-  assert.deepEqual(w.opened, ["https://flyingtulip.com/trade/portfolio/?a=" + DEAD + "&utm_source=ft-widget&utm_medium=macos&utm_content=account-pnl#ftw=macos.macos-15.1-3-0.account-pnl"], "the page opens, with its origin marker")
+  assert.deepEqual(w.opened, ["https://flyingtulip.com/trade/portfolio/?a=" + DEAD + "&utm_source=ft-widget&utm_medium=macos&utm_content=account-pnl#ftw=macos.macos-15.1-4-0.account-pnl"], "the page opens, with its origin marker")
   M.main(w.io, S({ cmd: "open", arg: "x", arg2: "https://evil.example/" }), NOW); assert.equal(w.opened.length, 1, "only flyingtulip.com")
 })
 ok("usage stats: switch, refresh, settings, wallet added and removed, HF alert, fetch errors once an hour, 30 per hour cap", () => {
@@ -409,12 +410,23 @@ ok("usage stats off (VAR_ANALYTICS=false, or the Advanced switch): nothing is se
 })
 ok("link origin: UTM after the existing query, the #ftw= marker, none on an anchor", () => {
   assert.equal(M.originUrl("https://flyingtulip.com/", "header-title", "macOS 15"),
-    "https://flyingtulip.com/?utm_source=ft-widget&utm_medium=macos&utm_content=header-title#ftw=macos.macos-15.1-3-0.header-title")
+    "https://flyingtulip.com/?utm_source=ft-widget&utm_medium=macos&utm_content=header-title#ftw=macos.macos-15.1-4-0.header-title")
   assert.equal(M.originUrl("https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=146&marketType=spot", "market-ft-price", "macOS 14"),
-    "https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=146&marketType=spot&utm_source=ft-widget&utm_medium=macos&utm_content=market-ft-price#ftw=macos.macos-14.1-3-0.market-ft-price")
+    "https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=146&marketType=spot&utm_source=ft-widget&utm_medium=macos&utm_content=market-ft-price#ftw=macos.macos-14.1-4-0.market-ft-price")
   assert.equal(M.originUrl("https://flyingtulip.com/rewards/#my-activity", "account-points", "macOS 15"),
     "https://flyingtulip.com/rewards/?utm_source=ft-widget&utm_medium=macos&utm_content=account-points#my-activity")
   assert.equal(M.osSlug("macOS 15"), "macos-15"); assert.equal(M.osSlug(""), "macos")
+})
+ok("SwiftBar gets SF Symbols and light/dark colours, xbar plain lines; charts have a transparent background", () => {
+  const w = world(), sw = M.main(w.io, args({ wallet: DEAD, host: "SwiftBar" }), NOW), xb = M.main(world().io, args({ wallet: DEAD }), NOW)
+  assert.deepEqual(validate(sw), []); assert.deepEqual(validate(xb), [])
+  for (const [name, sf] of [["Market ", "chart.line.uptrend.xyaxis"], ["Account ", "person.crop.circle"], ["Positions ", "list.bullet.rectangle"], ["Settings", "gearshape"]])
+    assert(sw.split("\n").some(l => l.startsWith(name) && l.includes("sfimage=" + sf)), name + " " + sf)
+  assert(/^Flying Tulip \| color=#7559ff,#b7b1ff/m.test(sw)); assert(!/sfimage=/.test(xb)); assert(/^Flying Tulip \| color=#7559ff /m.test(xb))
+  assert(!/font=Menlo/.test(sw + xb), "no monospace")
+  // the bar chart's first palette entry is fully transparent
+  const png = Buffer.from(M.barChartPng([1, 2, 3]), "base64"), i = png.indexOf("tRNS")
+  assert(i > 0 && png[i + 4] === 0, "transparent background")
 })
 // ---- the plugin file itself ----
 ok("plugin file: executable, bash shebang, required xbar metadata, refresh in filename, bash -n", () => {

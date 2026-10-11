@@ -6,7 +6,7 @@
 #
 # Metadata (xbar):
 #  <xbar.title>Flying Tulip</xbar.title>
-#  <xbar.version>v1.3.0</xbar.version>
+#  <xbar.version>v1.4.0</xbar.version>
 #  <xbar.author>Flying Tulip</xbar.author>
 #  <xbar.author.github>flyingtulipdotcom</xbar.author.github>
 #  <xbar.desc>FT market price, 24h application fees and, for optional wallets (shown in turn), health factor with liquidation alerts, PnL, FT earned, points, ftPUT gain and positions. Public API only.</xbar.desc>
@@ -509,11 +509,14 @@ function encodePng(r, palette) {
   var ihdr = new Uint8Array(13);
   ihdr.set(be32(r.w), 0); ihdr.set(be32(r.h), 4); ihdr[8] = 4; ihdr[9] = 3;
   var plte = new Uint8Array(palette.length * 3);
-  for (var i = 0; i < palette.length; i++) plte.set(palette[i], i * 3);
+  for (var i = 0; i < palette.length; i++) plte.set(palette[i].slice(0, 3), i * 3);
   var phys = new Uint8Array(9);
   phys.set(be32(5669), 0); phys.set(be32(5669), 4); phys[8] = 1;
+  // per-entry alpha: entry 0 is fully transparent, so the image sits on the menu's own background
+  var trns = new Uint8Array(palette.length);
+  for (var ti = 0; ti < palette.length; ti++) trns[ti] = palette[ti].length > 3 ? palette[ti][3] : 255;
   var parts = [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), pngChunk("IHDR", ihdr), pngChunk("PLTE", plte),
-    pngChunk("pHYs", phys), pngChunk("IDAT", z), pngChunk("IEND", new Uint8Array(0))];
+    pngChunk("tRNS", trns), pngChunk("pHYs", phys), pngChunk("IDAT", z), pngChunk("IEND", new Uint8Array(0))];
   var total = 0, j;
   for (j = 0; j < parts.length; j++) total += parts[j].length;
   var out = new Uint8Array(total), p = 0;
@@ -532,8 +535,9 @@ function base64(bytes) {
   return s;
 }
 
-// 0 bg, 1 tulip, 2 tulip400, 3 tulip300, 4 area, 5 grid, 6 green, 7 red
-var CHART_PALETTE = [[14, 14, 17], [117, 89, 255], [147, 133, 255], [183, 177, 255], [35, 28, 82], [42, 42, 50], [15, 215, 39], [239, 68, 68]];
+// [r,g,b,alpha]: 0 transparent, 1 tulip, 2 tulip400, 3 tulip300, 4 area (tulip, light), 5 grid, 6 green, 7 red, 8 bar track, 9 amber
+var CHART_PALETTE = [[0, 0, 0, 0], [117, 89, 255, 255], [147, 133, 255, 255], [183, 177, 255, 255], [117, 89, 255, 70], [128, 128, 140, 70],
+  [15, 215, 39, 255], [239, 68, 68, 255], [128, 128, 140, 90], [245, 165, 36, 255]];
 var CW = 340, CH = 76, CPAD = 7;   // 2x pixels, shown at 170x38 points
 
 function barChartPng(values) {
@@ -574,8 +578,19 @@ function lineChartPng(values) {
     }
   }
   for (i = 1; i < n; i++) r.line(X(i - 1), Y(values[i - 1]), X(i), Y(values[i]), 3, 3);
-  var up = values[n - 1] >= values[0];
-  r.rect(X(n - 1) - 4, Y(values[n - 1]) - 4, X(n - 1) + 4, Y(values[n - 1]) + 4, up ? 6 : 7);
+  r.rect(X(n - 1) - 4, Y(values[n - 1]) - 4, X(n - 1) + 4, Y(values[n - 1]) + 4, 3);
+  return base64(encodePng(r, CHART_PALETTE));
+}
+
+// One chain's health factor as a small bar (like the panel): track from HF 1 to 3, the fill coloured by level,
+// the red liquidation line. 2x pixels, shown at 120x10 points.
+function hfBarPng(hf, liqHf, level) {
+  var W = 240, H = 20, r = new Raster(W, H), x0 = 2, x1 = W - 2;
+  var at = function (v) { return x0 + Math.max(0, Math.min(1, (v - 1) / 2)) * (x1 - x0); };
+  r.rect(x0, 7, x1, 13, 8);
+  if (hf !== null && isFinite(hf)) r.rect(x0, 7, Math.max(x0 + 2, at(Math.min(3, hf))), 13, level === 2 ? 7 : (level === 1 ? 9 : 6));
+  var mx = Math.round(at(liqHf || DEFAULT_LIQ_HF));
+  r.rect(mx - 1, 1, mx + 2, 19, 7);
   return base64(encodePng(r, CHART_PALETTE));
 }
 
@@ -731,6 +746,10 @@ function clean(t) { return String(t).replace(/[|\r\n]+/g, " "); }
 // While usage stats are on, a link (href plus its element id el) runs this plugin with "open <element> <url>": the
 // click is counted, then the page opens. Off, it is a plain href.
 var LINKS = { self: "", on: false };
+// SwiftBar draws SF Symbols (sfimage) and takes a light,dark colour pair; xbar gets plain lines
+var STYLE = { swift: false };
+function sym(name, o) { o = o || {}; if (STYLE.swift) { o.sfimage = name; o.sfcolor = "#7559ff,#b7b1ff"; } return o; }
+function tint(light, dark) { return STYLE.swift ? light + "," + dark : light; }
 function linkParams(url, el) {
   if (LINKS.on && LINKS.self && el) return { shell: LINKS.self, param1: "open", param2: el, param3: url, terminal: false };
   return { href: url };
@@ -761,11 +780,11 @@ function linkFrom(L, from, url, el) {
 }
 function padR(s, n) { s = String(s); while (s.length < n) s += " "; return s; }
 function mono(extra) {
-  var o = { font: "Menlo", size: 12 };
+  var o = { size: 13 };
   for (var k in (extra || {})) o[k] = extra[k];
   return o;
 }
-function row(label, value, extra) { return line(padR(label, 12) + value, mono(extra)); }
+function row(label, value, extra) { return line(label + "   " + value, mono(extra)); }
 function head(text, url, el) { return line(text, { color: C_FAINT, size: 10, href: url || SITE, el: el }); }
 function deltaColor(v) { return !isFinite(v) || Math.abs(v) < 0.005 ? undefined : (v > 0 ? C_GREEN : C_RED); }
 function ageText(sec) { return sec < 90 ? sec + "s" : (sec < 5400 ? Math.round(sec / 60) + "m" : Math.round(sec / 3600) + "h"); }
@@ -811,13 +830,13 @@ function render(d, age, cfg, nowMs, selfPath) {
     L.push(line("FT offline", { image: LOGO_B64, color: C_FAINT }));
   } else L.push(titleLine(d, age, cfg, v));
   L.push("---");
-  L.push(line("Flying Tulip", { color: C_TULIP, size: 14, href: SITE, el: "header-title" }));
+  L.push(line("Flying Tulip", { color: tint(C_TULIP, "#b7b1ff"), size: 14, href: SITE, el: "header-title" }));
   L.push(line("Open flyingtulip.com", { href: SITE, el: "header-open-site" }));
-  L.push(line("Refresh now", selfPath ? act("refresh") : { refresh: true }));
+  L.push(line("Refresh now", sym("arrow.clockwise", selfPath ? act("refresh") : { refresh: true })));
   if (n > 1 && selfPath) {
     L.push("---");
     L.push(line("Showing " + shortAddr(cfg.wallet) + "  (" + (cfg.wallets.indexOf(cfg.wallet) + 1) + " of " + n + ")", { size: 11, color: C_FAINT, href: PAGES.portfolio, el: "header-wallet" }));
-    L.push(line("Next wallet ⇄", act("next")));
+    L.push(line("Next wallet ⇄", sym("arrow.left.arrow.right", act("next"))));
   }
   L.push("---");
 
@@ -836,7 +855,7 @@ function render(d, age, cfg, nowMs, selfPath) {
     M.push(row("Fees 24h", fmtUsd(d.fees.period24h) + (isFinite(dod) ? "  " + fmtPct(dod) + " d/d" : ""), { color: deltaColor(dod) }));
     M.push(line("Flying Tulip application fees, last 24 hours" + (isFinite(d.fees.lifetime) ? ", lifetime " + fmtUsd(d.fees.lifetime) : ""), { size: 11 }));
     for (var i = 0; i < d.fees.products.length; i++)
-      M.push(line("  " + d.fees.products[i].name + "  " + fmtUsd(d.fees.products[i].usd), { size: 11, font: "Menlo" }));
+      M.push(line("  " + d.fees.products[i].name + "  " + fmtUsd(d.fees.products[i].usd), { size: 11 }));
   } else M.push(row("Fees 24h", "— unavailable"));
   if (d.feesSeries && d.feesSeries.length > 1) {
     var fv = d.feesSeries.map(function (x) { return x.total; });
@@ -852,7 +871,7 @@ function render(d, age, cfg, nowMs, selfPath) {
   }
   linkFrom(M, mk0, mkt, "market-price-chart");
   submenu(L, line("Market     " + (d.price ? fmtPrice(d.price.price) + (isFinite(ch) ? " " + fmtPct(ch) : "") : "—") +
-    (d.fees ? "  ·  fees " + fmtUsd(d.fees.period24h) : ""), mono({ href: mkt, el: "market-header" })), M);
+    (d.fees ? "  ·  fees " + fmtUsd(d.fees.period24h) : ""), sym("chart.line.uptrend.xyaxis", mono({ href: mkt, el: "market-header" }))), M);
 
   // ---- Account (the wallet shown)
   var A = [], ac0 = 0, sum = [];
@@ -867,8 +886,11 @@ function render(d, age, cfg, nowMs, selfPath) {
       for (var c = 0; c < d.lend.length; c++) {
         var ce = d.lend[c];
         if (ce.hf === null && !(ce.debtUsd > 0) && !(ce.equityUsd > 0)) continue;
-        A.push(line("  " + padR(ce.name, 9) + (ce.hf === null ? "no debt" : "HF " + fmtHf(ce.hf) + "  debt " + fmtUsd(ce.debtUsd)) +
-          (isFinite(ce.equityUsd) ? "  equity " + fmtUsd(ce.equityUsd) : ""), { size: 11, font: "Menlo", href: PAGES.health, el: "account-hf-" + String(ce.name).toLowerCase().replace(/[^a-z0-9]+/g, "-") }));
+        var cl = ce.hf === null ? 0 : levelFor(ce.hf, cfg.alert, 0);
+        A.push(line(ce.name + "   " + (ce.hf === null ? "no debt" : fmtHf(ce.hf) + "   debt " + fmtUsd(ce.debtUsd)) +
+          (isFinite(ce.equityUsd) ? "   equity " + fmtUsd(ce.equityUsd) : ""), { size: 12, image: hfBarPng(ce.hf, ce.liqHf, cl),
+          color: ce.hf === null ? C_FAINT : (cl === 2 ? C_RED : (cl === 1 ? C_AMBER : undefined)),
+          href: PAGES.health, el: "account-hf-" + String(ce.name).toLowerCase().replace(/[^a-z0-9]+/g, "-") }));
       }
       A.push(line("Liquidation below HF " + (v.lowest ? v.lowest.liqHf : DEFAULT_LIQ_HF).toFixed(2) + ". Alerts at " +
         cfg.alert.warn.toFixed(2) + " (warning) and " + cfg.alert.critical.toFixed(2) + " (critical)", { size: 11, color: C_FAINT }));
@@ -885,8 +907,8 @@ function render(d, age, cfg, nowMs, selfPath) {
       var rw = d.rewards;
       A.push(row("FT earned", fmtFt(rw.totalFt) + " FT  all time"));
       if (isFinite(rw.sftFt)) {
-        A.push(line("  sftUSD yield     " + fmtFt(rw.sftFt) + " FT  (claimed " + fmtFt(rw.sftClaimed) + ", pending " + fmtFt(rw.sftPending) + ")", { size: 11, font: "Menlo" }));
-        A.push(line("  Lend FT rewards  " + fmtFt(rw.lendFt) + " FT  (received " + fmtFt(rw.lendReceived) + ", pending " + fmtFt(rw.lendPending) + ")", { size: 11, font: "Menlo" }));
+        A.push(line("  sftUSD yield     " + fmtFt(rw.sftFt) + " FT  (claimed " + fmtFt(rw.sftClaimed) + ", pending " + fmtFt(rw.sftPending) + ")", { size: 11 }));
+        A.push(line("  Lend FT rewards  " + fmtFt(rw.lendFt) + " FT  (received " + fmtFt(rw.lendReceived) + ", pending " + fmtFt(rw.lendPending) + ")", { size: 11 }));
         var bc = earnedByChain(rw);
         if (bc) A.push(line("  By chain: " + bc, { size: 11 }));
       }
@@ -900,7 +922,7 @@ function render(d, age, cfg, nowMs, selfPath) {
     if (d.points) {
       var rk = d.rank, pc = d.points.chains || [];
       A.push(row("Points", fmtPoints(d.points.total) + "  all chains" + (rk ? "  rank #" + thousands(rk.rank) + " of " + thousands(rk.total) : "")));
-      for (var pi = 0; pi < pc.length; pi++) A.push(line("  " + padR(pc[pi].name, 10) + fmtPoints(pc[pi].points), { size: 11, font: "Menlo" }));
+      for (var pi = 0; pi < pc.length; pi++) A.push(line("  " + pc[pi].name + "   " + fmtPoints(pc[pi].points), { size: 11 }));
       A.push(line("flyingtulip.com/rewards shows one chain at a time, the all-networks total is under it", { size: 11, color: C_FAINT }));
       sum.push(fmtPoints(d.points.total) + " pts");
     } else A.push(row("Points", "— unavailable"));
@@ -913,7 +935,7 @@ function render(d, age, cfg, nowMs, selfPath) {
       A.push(line("Gain = FT held x FT market price - cost basis", { size: 11, color: C_FAINT }));
       for (var q = 0; q < d.puts.rows.length; q++)
         A.push(line("  #" + d.puts.rows[q].nft + "  " + d.puts.rows[q].symbol + "  cost " + fmtUsd(d.puts.rows[q].costUsd) +
-          "  " + fmtFt(d.puts.rows[q].ft) + " FT", { size: 11, font: "Menlo" }));
+          "  " + fmtFt(d.puts.rows[q].ft) + " FT", { size: 11 }));
     }
     linkFrom(A, ac0, PAGES.put, "account-ftput");
   } else {
@@ -924,7 +946,7 @@ function render(d, age, cfg, nowMs, selfPath) {
     A.push("---");
     for (var wi = 0; wi < n; wi++) {
       var w = cfg.wallets[wi];
-      A.push(line((w === cfg.wallet ? "● " : "○ ") + shortAddr(w) + (w === cfg.wallet ? "  (shown)" : ""), act("show", w, { font: "Menlo", size: 12 })));
+      A.push(line((w === cfg.wallet ? "● " : "○ ") + shortAddr(w) + (w === cfg.wallet ? "  (shown)" : ""), act("show", w, { size: 12 })));
     }
     if (cfg.fromSettings) {
       A.push(line("These wallets come from the plugin settings (VAR_WALLET).", { size: 11, color: C_FAINT, href: PAGES.portfolio, el: "account-wallets-note" }));
@@ -936,7 +958,7 @@ function render(d, age, cfg, nowMs, selfPath) {
     }
   }
   var acHead = v.hasWallet ? "Account    " + shortAddr(cfg.wallet) + (sum.length ? "  " + sum.join("  ") : "") : "Account    add a wallet";
-  submenu(L, line(acHead, mono({ href: PAGES.portfolio, el: "account-header", color: v.hfLevel === 2 ? C_RED : (v.hfLevel === 1 ? C_AMBER : undefined) })), A);
+  submenu(L, line(acHead, sym("person.crop.circle", mono({ href: PAGES.portfolio, el: "account-header", color: v.hfLevel === 2 ? C_RED : (v.hfLevel === 1 ? C_AMBER : undefined) }))), A);
 
   // ---- Positions (the wallet shown)
   var P = [], posHead = "Positions  —";
@@ -947,12 +969,12 @@ function render(d, age, cfg, nowMs, selfPath) {
         var ps = d.positions[k];
         var lev = isFinite(ps.leverage) && ps.leverage > 0 ? " " + ps.leverage.toFixed(ps.leverage >= 10 ? 0 : 1) + "x" : "";
         P.push(line(padR(ps.symbol + " " + ps.side + lev, 14) + padR(ps.network, 10) + "mark " + fmtPrice(ps.mark) +
-          "  " + fmtSignedUsd(ps.pnlUsd), { size: 11, font: "Menlo", color: deltaColor(ps.pnlUsd), href: marketUrl(ps.market || (ps.symbol + "-ftUSD"), ps.chainId), el: "positions-row" }));
+          "  " + fmtSignedUsd(ps.pnlUsd), { size: 12, color: deltaColor(ps.pnlUsd), href: marketUrl(ps.market || (ps.symbol + "-ftUSD"), ps.chainId), el: "positions-row" }));
       }
       if (d.positions.length > 20) P.push(line("+" + (d.positions.length - 20) + " more on flyingtulip.com", { size: 11, href: PAGES.portfolio, el: "positions-more" }));
     } else { posHead = "Positions  none open"; P.push(line("No open positions", { size: 11, href: PAGES.portfolio, el: "positions-empty" })); }
   } else P.push(line(v.hasWallet ? "Unavailable right now" : "Add a wallet to see its open positions", { size: 11, href: PAGES.portfolio, el: "positions-empty" }));
-  submenu(L, line(posHead, mono({ href: PAGES.portfolio, el: "positions-header" })), P);
+  submenu(L, line(posHead, sym("list.bullet.rectangle", mono({ href: PAGES.portfolio, el: "positions-header" }))), P);
   L.push("---");
 
   // footer
@@ -973,7 +995,7 @@ function render(d, age, cfg, nowMs, selfPath) {
     SL.push(line("Advanced", { size: 12 }));
     if (!cfg.analytics) SL.push(line("--Anonymous usage stats: off (VAR_ANALYTICS in the plugin settings)", { size: 12, href: "https://github.com/flyingtulipdotcom/ft-desktop-widgets/tree/main/xbar#anonymous-usage-stats" }));
     else SL.push(line("--Anonymous usage stats: " + (cfg.statsOn ? "on (click to turn off)" : "off (click to turn on)"), act("stats", null, { size: 12 })));
-    submenu(L, line("Settings", { size: 12 }), SL);
+    submenu(L, line("Settings", sym("gearshape", { size: 12 })), SL);
   }
   return L.join("\n");
 }
@@ -1015,7 +1037,7 @@ function buildConfig(a) {
 // a wallet count bucket) are sent, by curl in the background, fire and forget. Never a wallet address, balance or
 // position; any 0x address that slips into a value becomes ":address". Nothing is sent while VAR_ANALYTICS is false
 // or "Anonymous usage stats" is off under Settings > Advanced. Each event name is capped at 30 per hour.
-var WIDGET_VERSION = "1.3.0";
+var WIDGET_VERSION = "1.4.0";
 var STATS_ENDPOINT = "https://plausible.io/api/event";
 var STATS_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) FlyingTulipWidget/" + WIDGET_VERSION;
 var STAT_CAP = 30;
@@ -1181,7 +1203,7 @@ function main(io, a, nowMs) {
     cfg.wallets = savedWallets(io, cfg); cfg.wallet = cfg.wallets[0] || "";
   }
   var st = loadState(io, statePath), sx = statsContext(io, cfg, st, nowMs);
-  LINKS.on = sx.on; LINKS.self = cfg.self;
+  LINKS.on = sx.on; LINKS.self = cfg.self; STYLE.swift = cfg.host === "SwiftBar";
   // switched in the plugin settings (VAR_ANALYTICS) since the last run: the same one last event, or the one on the way back
   if (sx.ss.wasOn !== undefined && sx.ss.wasOn !== sx.on)
     stat({ on: true, ss: sx.ss, nowMs: nowMs, out: sx.out }, sx.on ? "Usage stats on" : "Usage stats off", { os: osLabel(io, sx.ss) });
@@ -1327,7 +1349,7 @@ function run(argv) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    main: main, buildConfig: buildConfig, statBody: statBody, statArgs: statArgs, originUrl: originUrl, osSlug: osSlug, STATS_UA: STATS_UA, WIDGET_VERSION: WIDGET_VERSION, parseWallets: parseWallets, pinnedWallet: pinnedWallet, render: render, loadSources: loadSources, sourceSpecs: sourceSpecs, findRank: findRank,
+    main: main, buildConfig: buildConfig, hfBarPng: hfBarPng, statBody: statBody, statArgs: statArgs, originUrl: originUrl, osSlug: osSlug, STATS_UA: STATS_UA, WIDGET_VERSION: WIDGET_VERSION, parseWallets: parseWallets, pinnedWallet: pinnedWallet, render: render, loadSources: loadSources, sourceSpecs: sourceSpecs, findRank: findRank,
     parseFees: parseFees, parsePrice: parsePrice, parseLend: parseLend, parseSummary: parseSummary, mergeChains: mergeChains,
     lowestHf: lowestHf, parseRewards: parseRewards, earnedByChain: earnedByChain, parsePuts: parsePuts, putGain: putGain, parsePoints: parsePoints,
     rankInPage: rankInPage, parsePositions: parsePositions, parseFeesSeries: parseFeesSeries, parseKlines: parseKlines,

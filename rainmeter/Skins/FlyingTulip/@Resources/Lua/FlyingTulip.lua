@@ -643,9 +643,10 @@ end
 local function set(meter, option, value) SK:Bang("!SetOption", meter, option, value) end
 -- API text must not be interpreted as Rainmeter variables/measure references
 -- "\001" "\002" "\003" are placeholders for the symbols the ANSI script cannot carry: infinity, middle dot, approx
-local DOT, APPROX = "\002", "\003"
+local DOT, APPROX, HASH = "\002", "\003", "\004"
 local function clean(t)
-  return ((tostring(t):gsub("[#%[%]\r\n]", " "):gsub("\001", INF_REF):gsub("\002", "[\\183]"):gsub("\003", "[\\8776]")))
+  return ((tostring(t):gsub("[#%[%]\r\n]", " "):gsub("\001", INF_REF):gsub("\002", "[\\183]"):gsub("\003", "[\\8776]")
+    :gsub("\004", "[\\35]")))
 end
 local shownText = {} -- what each meter was last given (the layout skips empty detail lines)
 local function setText(meter, text, color)
@@ -1109,8 +1110,8 @@ local function renderAccount(y, t, level)
   local by = {}
   for _, c in ipairs(S.points and S.points.chains or {}) do by[#by + 1] = c.name .. " " .. fmtPoints(c.points) end
   local r = S.rank
-  local ptsD = pair and { { table.concat(by, "  " .. DOT .. "  ") }, { r and ("rank " .. thousands(r.rank) .. " of " .. thousands(r.total)) or "" } }
-    or { { table.concat(by, "  " .. DOT .. "  ") .. (r and ("  " .. DOT .. "  rank " .. thousands(r.rank) .. " of " .. thousands(r.total)) or "") } }
+  local ptsD = pair and { { table.concat(by, "  " .. DOT .. "  ") }, { r and ("rank " .. HASH .. thousands(r.rank) .. " of " .. thousands(r.total)) or "" } }
+    or { { table.concat(by, "  " .. DOT .. "  ") .. (r and ("  " .. DOT .. "  rank " .. HASH .. thousands(r.rank) .. " of " .. thousands(r.total)) or "") } }
   local putD = { { g and (fmtPct(g.gainPct) .. "  " .. DOT .. "  value " .. fmtUsd(S.puts.ftHeld * (S.price and S.price.price or 0))) or "", g and deltaColor(g.gainUsd) } }
   local w2 = pair and half or CW
   local ph = pair and math.max(metricHeight(ptsD), metricHeight(putD)) or metricHeight(ptsD)
@@ -1235,7 +1236,7 @@ local function renderPositions(y)
     for i = 1, k do
       local r = rows[i]
       local ry = y + 32 + (i - 1) * 18
-      putText("MeterPutsName" .. i, X0, ry, "#" .. r.nft .. " " .. r.symbol, C_TEXT, 130)
+      putText("MeterPutsName" .. i, X0, ry, HASH .. r.nft .. " " .. r.symbol, C_TEXT, 130)
       putText("MeterPutsCost" .. i, XR - 70, ry, fmtUsd(r.costUsd) .. " @ " .. fmtPrice(r.strike), C_SUB, 130)
       putText("MeterPutsSince" .. i, XR, ry, tostring(r.since or ""):sub(3), C_SUB, 60)
     end
