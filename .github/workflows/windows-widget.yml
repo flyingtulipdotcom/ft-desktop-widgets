@@ -189,7 +189,7 @@ jobs:
     steps:
       - name: Skipped without the certificate secrets
         if: env.HAS_CERT != 'true'
-        run: echo "WINDOWS_CERT_PFX / WINDOWS_CERT_PASSWORD are not set: no real signing, the test-certificate package stays the output."
+        run: echo 'No certificate secrets, so no real signing, the test-certificate package stays the output'
       - uses: actions/checkout@v4
         if: env.HAS_CERT == 'true'
       - uses: actions/setup-dotnet@v4
