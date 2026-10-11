@@ -1,0 +1,40 @@
+name: macOS widget screenshots
+
+# Runs the xbar/SwiftBar plugin on a real macOS runner: once directly (stdout is checked and saved), and once
+# inside SwiftBar, with screenshots of the menu bar and of the open dropdown.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "xbar/**"
+      - ".github/workflows/macos-screenshot.yml"
+      - ".github/scripts/macos-screenshot.sh"
+  push:
+    branches: [main]
+    paths:
+      - "xbar/**"
+      - ".github/workflows/macos-screenshot.yml"
+      - ".github/scripts/macos-screenshot.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  screenshots:
+    runs-on: macos-14
+    timeout-minutes: 25
+    env:
+      # A wallet from the public points leaderboard (api.flyingtulip.com/points/leaderboard).
+      FT_CI_WALLET: "0x38A564A38Be5DFb6eF2AB765dA1e4397d03C2D62"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the plugin, screenshot it in SwiftBar
+        run: bash .github/scripts/macos-screenshot.sh
+      - name: Upload screenshots and output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-widget
+          path: out/
+          if-no-files-found: warn
