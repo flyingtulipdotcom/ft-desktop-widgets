@@ -1,0 +1,234 @@
+name: Windows 11 widget
+
+# Native Windows 11 Widgets Board widget (windows-widget/): unit tests, Adaptive Card previews bound to live public data,
+# the MSIX (self-signed test certificate made here, published with the .cer) and a zip. A real signing job runs only once
+# the WINDOWS_CERT_PFX and WINDOWS_CERT_PASSWORD secrets exist. A tag windows-widget-v* makes a release.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "windows-widget/**"
+      - ".github/workflows/windows-widget.yml"
+  push:
+    branches: [main]
+    paths:
+      - "windows-widget/**"
+      - ".github/workflows/windows-widget.yml"
+    tags: ["windows-widget-v*"]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  # A wallet from the public points leaderboard (api.flyingtulip.com/points/leaderboard), plus a second one so the
+  # wallet switch shows in the previews.
+  FT_CI_WALLETS: "0x38A564A38Be5DFb6eF2AB765dA1e4397d03C2D62,0x47A761bb9e970AC93Cb571c4614C4cA643714e4F"
+
+jobs:
+  test:
+    name: Build and unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "8.0.x" }
+      - name: Unit tests (parsing, card data binding, URL markers, usage stats opt-out and payload)
+        run: dotnet test windows-widget/tests/FlyingTulip.Widget.Core.Tests -c Release --logger "trx;LogFileName=results.trx"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: windows-widget-test-results, path: "windows-widget/tests/**/TestResults/*.trx", if-no-files-found: warn }
+
+  previews:
+    name: Adaptive Card previews
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "8.0.x" }
+      - uses: oven-sh/setup-bun@v2
+      - name: Card templates and data from the live public API
+        run: dotnet run --project windows-widget/tools/Preview -c Release -- windows-widget/out/data "$FT_CI_WALLETS"
+      - name: Install the renderer and Chromium
+        working-directory: windows-widget/preview
+        run: |
+          bun install --frozen-lockfile
+          bunx playwright-core install --with-deps chromium
+      - name: Render every tab and size with the Adaptive Cards renderer, light and dark
+        working-directory: windows-widget/preview
+        run: node render.mjs ../out/data ../out/shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: windows-widget-previews, path: windows-widget/out/, if-no-files-found: warn }
+      - name: Publish the previews to the ci-screenshots branch, the job summary and the PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -u
+          shopt -s nullglob
+          pngs=(windows-widget/out/shots/*.png)
+          [ ${#pngs[@]} -gt 0 ] || { echo "no previews"; exit 0; }
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@users.noreply.github.com"
+          pub="$RUNNER_TEMP/pub"
+          rm -rf "$pub"
+          git clone --quiet --depth 1 --branch ci-screenshots "https://x-access-token:$GH_TOKEN@github.com/$REPO" "$pub"
+          dir="windows-widget-$RUN_ID"
+          mkdir -p "$pub/$dir"
+          cp "${pngs[@]}" "$pub/$dir/"
+          git -C "$pub" add "$dir"
+          git -C "$pub" commit --quiet -m "windows widget previews for run $RUN_ID"
+          for i in 1 2 3; do
+            git -C "$pub" push --quiet origin ci-screenshots && break
+            git -C "$pub" pull --quiet --rebase origin ci-screenshots
+          done
+          base="https://raw.githubusercontent.com/$REPO/ci-screenshots/$dir"
+          {
+            echo "## Windows 11 widget: Adaptive Card preview (Windows 11 host config)"
+            echo
+            echo "The cards below are the widget's real Adaptive Card templates bound to live public data, drawn by the Adaptive Cards JavaScript renderer."
+            echo "They are previews, not screenshots of the Widgets Board (see the board probe job). The accent colour is the Flying Tulip purple here; the board uses the Windows accent colour."
+            echo
+            for t in market account positions; do
+              for s in medium large; do
+                echo "### $t $s"; echo
+                echo "![$t $s dark]($base/$t-$s-dark.png) ![$t $s light]($base/$t-$s-light.png)"; echo
+              done
+            done
+            echo "### small and customize"; echo
+            echo "![small dark]($base/small-dark.png) ![small light]($base/small-light.png)"; echo
+            echo "![customize dark]($base/customize-dark.png) ![customize light]($base/customize-light.png)"
+          } | tee body.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --repo "$REPO" --body-file body.md
+          fi
+
+  build:
+    name: MSIX (test certificate) and zip
+    runs-on: windows-latest
+    needs: [test, previews]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "8.0.x" }
+      - uses: actions/download-artifact@v4
+        with: { name: windows-widget-previews, path: previews }
+      - name: Publish the provider
+        run: dotnet publish windows-widget/src/FlyingTulip.Widget.Provider -c Release -r win-x64 -o windows-widget/out/publish
+      - name: Package and sign with a self-signed test certificate
+        shell: pwsh
+        run: |
+          $v = ("${{ startsWith(github.ref, 'refs/tags/windows-widget-v') && github.ref_name || 'windows-widget-v1.0.0' }}" -replace '^windows-widget-v', '') + ".0"
+          ./windows-widget/build/package.ps1 -Publish windows-widget/out/publish -Shot previews/shots/market-large-dark.png -OutDir windows-widget/out/dist -Version $v
+      - name: Zip
+        shell: pwsh
+        run: |
+          Copy-Item windows-widget/install.ps1 windows-widget/out/dist/
+          Compress-Archive -Path windows-widget/out/dist/* -DestinationPath windows-widget/out/FlyingTulipWidget-windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-widget-msix
+          path: |
+            windows-widget/out/dist/*
+            windows-widget/out/FlyingTulipWidget-windows.zip
+          if-no-files-found: error
+
+  board-probe:
+    name: Widgets Board on this runner?
+    runs-on: windows-latest
+    needs: build
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: windows-widget-msix, path: dist }
+      - name: Probe, trust the test certificate and try to install the package
+        shell: pwsh
+        run: |
+          $out = New-Object System.Collections.Generic.List[string]
+          function Log($s) { $out.Add($s); Write-Host $s }
+          Log "OS: $((Get-CimInstance Win32_OperatingSystem).Caption) build $([Environment]::OSVersion.Version)"
+          Log "Windows Feature Experience Pack / Widgets package (MicrosoftWindows.Client.WebExperience): $((Get-AppxPackage -AllUsers -Name MicrosoftWindows.Client.WebExperience -ErrorAction SilentlyContinue | Measure-Object).Count) found"
+          Log "Widgets processes: $((Get-Process -Name Widgets*,WidgetService -ErrorAction SilentlyContinue | Measure-Object).Count) running"
+          $board = (Get-AppxPackage -AllUsers -Name MicrosoftWindows.Client.WebExperience -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0
+          Log "Real Widgets Board available: $board"
+          try {
+            Import-Certificate -FilePath (Get-ChildItem dist/*.cer).FullName -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+            Log "test certificate trusted"
+            $rt = Join-Path $env:RUNNER_TEMP "rt.exe"
+            Invoke-WebRequest "https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe" -OutFile $rt
+            Start-Process $rt -ArgumentList "--quiet" -Wait
+            Add-AppxPackage -Path (Get-ChildItem dist/*.msix).FullName
+            $p = Get-AppxPackage -Name FlyingTulip.WindowsWidget
+            Log "MSIX install: $($p.PackageFullName)"
+          } catch { Log "MSIX install failed: $($_.Exception.Message)" }
+          $out | Set-Content board-probe.txt
+          "## Widgets Board probe`n" | Add-Content $env:GITHUB_STEP_SUMMARY
+          '```' | Add-Content $env:GITHUB_STEP_SUMMARY
+          $out | Add-Content $env:GITHUB_STEP_SUMMARY
+          '```' | Add-Content $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: windows-widget-board-probe, path: board-probe.txt, if-no-files-found: warn }
+
+  sign:
+    name: Real signing (needs WINDOWS_CERT_PFX and WINDOWS_CERT_PASSWORD)
+    runs-on: windows-latest
+    needs: build
+    env:
+      HAS_CERT: ${{ secrets.WINDOWS_CERT_PFX != '' && secrets.WINDOWS_CERT_PASSWORD != '' }}
+    steps:
+      - name: Skipped without the certificate secrets
+        if: env.HAS_CERT != 'true'
+        run: echo "WINDOWS_CERT_PFX / WINDOWS_CERT_PASSWORD are not set: no real signing, the test-certificate package stays the output."
+      - uses: actions/checkout@v4
+        if: env.HAS_CERT == 'true'
+      - uses: actions/setup-dotnet@v4
+        if: env.HAS_CERT == 'true'
+        with: { dotnet-version: "8.0.x" }
+      - uses: actions/download-artifact@v4
+        if: env.HAS_CERT == 'true'
+        with: { name: windows-widget-previews, path: previews }
+      - name: Publish, package and sign with the real certificate (the package publisher becomes the certificate subject)
+        if: env.HAS_CERT == 'true'
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX }}
+          PFX_PASS: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          dotnet publish windows-widget/src/FlyingTulip.Widget.Provider -c Release -r win-x64 -o windows-widget/out/publish
+          $pfx = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_B64))
+          $v = ("${{ startsWith(github.ref, 'refs/tags/windows-widget-v') && github.ref_name || 'windows-widget-v1.0.0' }}" -replace '^windows-widget-v', '') + ".0"
+          ./windows-widget/build/package.ps1 -Publish windows-widget/out/publish -Shot previews/shots/market-large-dark.png -OutDir windows-widget/out/signed -Version $v -Pfx $pfx -PfxPassword $env:PFX_PASS
+          Remove-Item $pfx
+      - uses: actions/upload-artifact@v4
+        if: env.HAS_CERT == 'true'
+        with: { name: windows-widget-msix-signed, path: windows-widget/out/signed/*.msix, if-no-files-found: error }
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/windows-widget-v')
+    runs-on: ubuntu-latest
+    needs: [build, board-probe]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: windows-widget-msix, path: dist }
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --title "Windows 11 widget ${TAG#windows-widget-v}" --notes-file windows-widget/RELEASE_NOTES.md \
+            dist/FlyingTulipWidget.msix dist/FlyingTulipWidget-test.cer dist/install.ps1 dist/FlyingTulipWidget-windows.zip 2>&1 \
+            || gh release upload "$TAG" dist/FlyingTulipWidget.msix dist/FlyingTulipWidget-test.cer dist/install.ps1 dist/FlyingTulipWidget-windows.zip --clobber
