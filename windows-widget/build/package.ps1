@@ -62,9 +62,10 @@ $manifest = $manifest.Replace("{{PUBLISHER}}", [System.Security.SecurityElement]
 [IO.File]::WriteAllText((Join-Path $layout "AppxManifest.xml"), $manifest, (New-Object System.Text.UTF8Encoding($false)))
 
 # --- pack and sign ---------------------------------------------------------------------------------------------------
-$kit = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.*\x64" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
-if (-not $kit) { $kit = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.*\x64" -ErrorAction SilentlyContinue | Select-Object -First 1 }
-$makeappx = Join-Path $kit.FullName "makeappx.exe"; $signtool = Join-Path $kit.FullName "signtool.exe"
+$kit = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\10.*\x64\makeappx.exe" -ErrorAction SilentlyContinue |
+  Sort-Object { [version]($_.Directory.Parent.Name) } -Descending | Select-Object -First 1
+if (-not $kit) { throw "makeappx.exe not found (Windows SDK)" }
+$makeappx = $kit.FullName; $signtool = Join-Path $kit.DirectoryName "signtool.exe"
 $msix = Join-Path $OutDir $MsixName
 if (Test-Path $msix) { Remove-Item $msix }
 & $makeappx pack /d $layout /p $msix /o | Write-Host
