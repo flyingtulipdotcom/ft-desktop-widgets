@@ -369,7 +369,7 @@ ok("usage stats: every link runs the plugin with its element id; the click is co
   M.main(w.io, S({ cmd: "open", arg: "account-pnl", arg2: "https://flyingtulip.com/trade/portfolio/?a=" + DEAD }), NOW)
   const lc = named(w, "Link click"); assert.equal(lc.length, 1)
   assert.deepEqual(lc[0].body.props, { platform: "macos", version: M.WIDGET_VERSION, element: "account-pnl", url: "https://flyingtulip.com/trade/portfolio/?a=:address" })
-  assert.deepEqual(w.opened, ["https://flyingtulip.com/trade/portfolio/?a=" + DEAD], "the real page still opens")
+  assert.deepEqual(w.opened, ["https://flyingtulip.com/trade/portfolio/?a=" + DEAD + "&utm_source=ft-widget&utm_medium=macos&utm_content=account-pnl#ftw=macos.macos-15.1-3-0.account-pnl"], "the page opens, with its origin marker")
   M.main(w.io, S({ cmd: "open", arg: "x", arg2: "https://evil.example/" }), NOW); assert.equal(w.opened.length, 1, "only flyingtulip.com")
 })
 ok("usage stats: switch, refresh, settings, wallet added and removed, HF alert, fetch errors once an hour, 30 per hour cap", () => {
@@ -386,18 +386,35 @@ ok("usage stats: switch, refresh, settings, wallet added and removed, HF alert, 
   assert.equal(named(w3, "Link click").length, 30); assert.equal(w3.opened.length, 40, "pages open regardless of the cap")
 })
 ok("usage stats off (VAR_ANALYTICS=false, or the Advanced switch): nothing is sent, links are plain", () => {
-  for (const mk of [() => ({ w: world({ prompt: W2 }), a: o => args(o) }), () => { const w = world({ prompt: W2 }); M.main(w.io, S({ cmd: "stats" }), NOW); return { w, a: o => S(o) } }]) {
-    const { w, a } = mk()
+  for (const mk of [() => ({ w: world({ prompt: W2 }), a: o => args(o), before: 0 }), () => { const w = world({ prompt: W2 }); M.main(w.io, S({ cmd: "stats" }), NOW); return { w, a: o => S(o), before: 1 } }]) {
+    const { w, a, before } = mk()
+    assert.equal(w.posts.length, before, "the switch itself sends exactly one event")
+    if (before) assert.deepEqual(named(w, "Usage stats off")[0].body.props, { platform: "macos", version: M.WIDGET_VERSION, os: "macOS 15" })
     let out = M.main(w.io, a({ wallet: DEAD }), NOW)
     assert(out.includes("href=https://flyingtulip.com/statistics/"))
     M.main(w.io, a({ cmd: "open", arg: "header-title", arg2: "https://flyingtulip.com/" }), NOW); M.main(w.io, a({ cmd: "add" }), NOW)
-    M.main(w.io, a({ cmd: "next" }), NOW); M.main(w.io, a({ cmd: "refresh" }), NOW)
-    assert.equal(w.posts.length, 0); assert.equal(w.opened.length, 1)
+    M.main(w.io, a({ cmd: "next" }), NOW); M.main(w.io, a({ cmd: "refresh" }), NOW + 90000e3)
+    assert.equal(w.posts.length, before, "nothing after"); assert.deepEqual(w.opened, ["https://flyingtulip.com/"], "plain URL while off")
   }
+  // switched off in the plugin settings: one "Usage stats off" at the next run, then nothing; back on: "Usage stats on"
+  const wv = world(); M.main(wv.io, S({}), NOW); const n0 = wv.posts.length
+  M.main(wv.io, args({}), NOW + 60e3); assert.equal(wv.posts.length, n0 + 1); assert.equal(named(wv, "Usage stats off").length, 1)
+  M.main(wv.io, args({}), NOW + 120e3); M.main(wv.io, args({ cmd: "refresh" }), NOW + 180e3); assert.equal(wv.posts.length, n0 + 1)
+  M.main(wv.io, S({}), NOW + 240e3); assert.equal(named(wv, "Usage stats on").length, 1)
   const w = world(); M.main(w.io, S({ cmd: "stats" }), NOW); let out = M.main(w.io, S({}), NOW)
   assert(/^----Anonymous usage stats: off \(click to turn on\) \|.*param1=stats/m.test(out), "Settings > Advanced shows the switch")
   M.main(w.io, S({ cmd: "stats" }), NOW); out = M.main(w.io, S({}), NOW + 1)
   assert(/^----Anonymous usage stats: on \(click to turn off\)/m.test(out)); assert.equal(named(w, "pageview").length, 1)
+  assert.equal(named(w, "Usage stats off").length, 1); assert.equal(named(w, "Usage stats on").length, 1)
+})
+ok("link origin: UTM after the existing query, the #ftw= marker, none on an anchor", () => {
+  assert.equal(M.originUrl("https://flyingtulip.com/", "header-title", "macOS 15"),
+    "https://flyingtulip.com/?utm_source=ft-widget&utm_medium=macos&utm_content=header-title#ftw=macos.macos-15.1-3-0.header-title")
+  assert.equal(M.originUrl("https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=146&marketType=spot", "market-ft-price", "macOS 14"),
+    "https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=146&marketType=spot&utm_source=ft-widget&utm_medium=macos&utm_content=market-ft-price#ftw=macos.macos-14.1-3-0.market-ft-price")
+  assert.equal(M.originUrl("https://flyingtulip.com/rewards/#my-activity", "account-points", "macOS 15"),
+    "https://flyingtulip.com/rewards/?utm_source=ft-widget&utm_medium=macos&utm_content=account-points#my-activity")
+  assert.equal(M.osSlug("macOS 15"), "macos-15"); assert.equal(M.osSlug(""), "macos")
 })
 // ---- the plugin file itself ----
 ok("plugin file: executable, bash shebang, required xbar metadata, refresh in filename, bash -n", () => {

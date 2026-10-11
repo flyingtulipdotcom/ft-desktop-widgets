@@ -6,7 +6,7 @@
 #
 # Metadata (xbar):
 #  <xbar.title>Flying Tulip</xbar.title>
-#  <xbar.version>v1.2.0</xbar.version>
+#  <xbar.version>v1.3.0</xbar.version>
 #  <xbar.author>Flying Tulip</xbar.author>
 #  <xbar.author.github>flyingtulipdotcom</xbar.author.github>
 #  <xbar.desc>FT market price, 24h application fees and, for optional wallets (shown in turn), health factor with liquidation alerts, PnL, FT earned, points, ftPUT gain and positions. Public API only.</xbar.desc>
@@ -1015,7 +1015,7 @@ function buildConfig(a) {
 // a wallet count bucket) are sent, by curl in the background, fire and forget. Never a wallet address, balance or
 // position; any 0x address that slips into a value becomes ":address". Nothing is sent while VAR_ANALYTICS is false
 // or "Anonymous usage stats" is off under Settings > Advanced. Each event name is capped at 30 per hour.
-var WIDGET_VERSION = "1.2.0";
+var WIDGET_VERSION = "1.3.0";
 var STATS_ENDPOINT = "https://plausible.io/api/event";
 var STATS_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) FlyingTulipWidget/" + WIDGET_VERSION;
 var STAT_CAP = 30;
@@ -1049,6 +1049,26 @@ function stat(ctx, name, props) {
 }
 function statsFlush(io, ctx) { if (ctx && ctx.out.length) { try { io.post(ctx.out); } catch (e) { /* never matters */ } ctx.out = []; } }
 function walletsBucket(n) { return n >= 3 ? "3+" : String(n); }
+// "macOS 15", kept in the state file once found
+function osLabel(io, ss) {
+  if (ss && ss.os) return ss.os;
+  var v = "";
+  try { v = String(io.osVersion() || ""); } catch (e) { v = ""; }
+  var major = (v.match(/^(\d+)/) || [])[1], label = major ? "macOS " + major : "macOS";
+  if (ss && major) ss.os = label;
+  return label;
+}
+function osSlug(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "macos"; }
+// Where a visit to flyingtulip.com came from, for the website's own stats, only while usage stats are on:
+//   ?utm_source=ft-widget&utm_medium=macos&utm_content=<element>  (added to the query the URL already has)
+//   #ftw=macos.<os-slug>.<version, dots as dashes>.<element>      (left out when the URL already has an anchor)
+function originUrl(url, element, os) {
+  var el = String(element || "").toLowerCase().replace(/[^a-z0-9-]/g, "");
+  var i = url.indexOf("#"), base = i < 0 ? url : url.slice(0, i), hash = i < 0 ? null : url.slice(i + 1);
+  var q = (base.indexOf("?") < 0 ? "?" : "&") + "utm_source=ft-widget&utm_medium=macos&utm_content=" + el;
+  if (hash !== null) return base + q + "#" + hash;
+  return base + q + "#ftw=macos." + osSlug(os) + "." + WIDGET_VERSION.replace(/\./g, "-") + "." + el;
+}
 var STAT_ENDPOINT = { price: "ticker", fees: "fees", feesSeries: "fees", klines: "klines", lend: "lend", pnl: "summary",
   rewards: "rewards", points: "points", positions: "positions", puts: "ftput", rank: "leaderboard" };
 // a failed or unusable answer, at most once an hour per endpoint
@@ -1126,13 +1146,28 @@ function main(io, a, nowMs) {
     var url = String(a.arg2 || "");
     if (!/^https:\/\/flyingtulip\.com\//.test(url)) return "";
     var st0 = loadState(io, statePath), c0 = statsContext(io, cfg, st0, nowMs);
-    stat(c0, "Link click", { element: String(a.arg || "").replace(/[^a-z0-9-]/g, "").slice(0, 60), url: url });
+    var elId = String(a.arg || "").replace(/[^a-z0-9-]/g, "").slice(0, 60);
+    stat(c0, "Link click", { element: elId, url: url });
     statsFlush(io, c0);
+    var target = c0.on ? originUrl(url, elId, osLabel(io, c0.ss)) : url;
     try { saveState(io, statePath, st0); } catch (e) { /* optional */ }
-    io.openUrl(url);
+    io.openUrl(target);
     return "";
   }
-  if (a.cmd === "stats") { io.writeFile(statsSwitchFile(cfg), statsOn(io, cfg) ? "off" : "on"); return ""; }
+  if (a.cmd === "stats") {
+    // one last event on the way off (then nothing), one on the way back on
+    var st2 = loadState(io, statePath), c2 = statsContext(io, cfg, st2, nowMs), os2 = osLabel(io, c2.ss);
+    if (c2.on) { stat(c2, "Usage stats off", { os: os2 }); io.writeFile(statsSwitchFile(cfg), "off"); c2.ss.wasOn = false; }
+    else {
+      io.writeFile(statsSwitchFile(cfg), "on");
+      c2.on = statsOn(io, cfg);
+      if (c2.on) stat(c2, "Usage stats on", { os: os2 });
+      c2.ss.wasOn = c2.on;
+    }
+    statsFlush(io, c2);
+    try { saveState(io, statePath, st2); } catch (e) { /* optional */ }
+    return "";
+  }
   if (a.cmd === "wallet" || a.cmd === "add" || a.cmd === "remove") {
     var st1 = loadState(io, statePath), c1 = statsContext(io, cfg, st1, nowMs);
     var r = runWalletPrompt(io, cfg, a.cmd, a.arg, c1);
@@ -1147,14 +1182,15 @@ function main(io, a, nowMs) {
   }
   var st = loadState(io, statePath), sx = statsContext(io, cfg, st, nowMs);
   LINKS.on = sx.on; LINKS.self = cfg.self;
+  // switched in the plugin settings (VAR_ANALYTICS) since the last run: the same one last event, or the one on the way back
+  if (sx.ss.wasOn !== undefined && sx.ss.wasOn !== sx.on)
+    stat({ on: true, ss: sx.ss, nowMs: nowMs, out: sx.out }, sx.on ? "Usage stats on" : "Usage stats off", { os: osLabel(io, sx.ss) });
+  sx.ss.wasOn = sx.on;
   if (a.cmd === "next" || a.cmd === "show") stat(sx, "Wallet switch");
   if (a.cmd === "refresh") stat(sx, "Refresh");
   // one pageview a day (the plugin has no launch of its own: it runs every minute)
   if (sx.on && (!sx.ss.pageAt || nowMs - sx.ss.pageAt >= 86400000)) {
-    var osv = "";
-    try { osv = String(io.osVersion() || ""); } catch (e) { osv = ""; }
-    var major = (osv.match(/^(\d+)/) || [])[1];
-    if (stat(sx, "pageview", { os: major ? "macOS " + major : "macOS", host: cfg.host,
+    if (stat(sx, "pageview", { os: osLabel(io, sx.ss), host: cfg.host,
       walletsConfigured: walletsBucket((cfg.wallets.length ? cfg.wallets : savedWallets(io, cfg)).length) })) sx.ss.pageAt = nowMs;
   }
   for (var w0 in st.wallets) if (cfg.wallets.indexOf(w0) < 0) delete st.wallets[w0];   // removed wallets
@@ -1291,7 +1327,7 @@ function run(argv) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    main: main, buildConfig: buildConfig, statBody: statBody, statArgs: statArgs, STATS_UA: STATS_UA, WIDGET_VERSION: WIDGET_VERSION, parseWallets: parseWallets, pinnedWallet: pinnedWallet, render: render, loadSources: loadSources, sourceSpecs: sourceSpecs, findRank: findRank,
+    main: main, buildConfig: buildConfig, statBody: statBody, statArgs: statArgs, originUrl: originUrl, osSlug: osSlug, STATS_UA: STATS_UA, WIDGET_VERSION: WIDGET_VERSION, parseWallets: parseWallets, pinnedWallet: pinnedWallet, render: render, loadSources: loadSources, sourceSpecs: sourceSpecs, findRank: findRank,
     parseFees: parseFees, parsePrice: parsePrice, parseLend: parseLend, parseSummary: parseSummary, mergeChains: mergeChains,
     lowestHf: lowestHf, parseRewards: parseRewards, earnedByChain: earnedByChain, parsePuts: parsePuts, putGain: putGain, parsePoints: parsePoints,
     rankInPage: rankInPage, parsePositions: parsePositions, parseFeesSeries: parseFeesSeries, parseKlines: parseKlines,

@@ -313,8 +313,8 @@ ok("price and position meters link to their trade pages", function()
   eq(sk:option("MeterPos2", "LeftMouseUpAction"), L("positions-row", "https://flyingtulip.com/trade/portfolio/"))
   -- a click counts the element and opens the page
   sk:exec(sk:option("MeterPos1", "LeftMouseUpAction")); noErrors(sk)
-  eq(sk.runs[#sk.runs], [=["https://flyingtulip.com/trade/?symbol=wS-ftUSD&chainId=146&marketType=spot"]=])
-  has(sk.runs[#sk.runs - 1], '"Link click" "1.2.0"'); has(sk.runs[#sk.runs - 1], '"element=positions-row"')
+  eq(sk.runs[#sk.runs], [=["https://flyingtulip.com/trade/?symbol=wS-ftUSD&chainId=146&marketType=spot&utm_source=ft-widget&utm_medium=windows&utm_content=positions-row#ftw=windows.windows.1-3-0.positions-row"]=])
+  has(sk.runs[#sk.runs - 1], '"Link click" "1.3.0"'); has(sk.runs[#sk.runs - 1], '"element=positions-row"')
 end)
 ok("rank search: one forced fetch per page, late answers for an old page ignored, measure disabled after", function()
   local pages = {}
@@ -606,7 +606,7 @@ end
 ok("usage stats: a launch pageview with only platform-level values, never an address", function()
   local sk = boot({ Wallets = W1 .. "," .. W2 .. "," .. W3 }); settle(sk); noErrors(sk)
   local pv = statsNamed(sk, "pageview")
-  eq(#pv, 1); has(pv[1], '"1.2.0" "#PROGRAMPATH#Rainmeter.exe" "walletsConfigured=3+"')
+  eq(#pv, 1); has(pv[1], '"1.3.0" "#PROGRAMPATH#Rainmeter.exe" "walletsConfigured=3+"')
   has(pv[1], '"powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "')
   -- use it: tabs, links, settings, a switch, a refresh, a wallet added and removed
   sk:exec(sk:option("MeterTabPositions", "LeftMouseUpAction")); sk:exec(sk:option("MeterLogo", "LeftMouseUpAction"))
@@ -646,11 +646,17 @@ end)
 ok("usage stats: the Advanced switch in the right-click menu turns them off and on, kept in Settings.inc", function()
   local sk = boot({ Wallets = W1 }); settle(sk)
   eq(sk:option("Rainmeter", "ContextTitle7"), "Advanced: anonymous usage stats on or off")
+  local n = #stats(sk)
   sk:exec(sk:option("Rainmeter", "ContextAction7")); noErrors(sk)
   has(readFile(sk.dir .. "/@Resources/Settings.inc"), "\nAnalytics=0\n"); has(sk:text("MeterBanner"), "are off")
-  local n = #stats(sk); sk:exec(sk:option("MeterTabMarket", "LeftMouseUpAction")); eq(#stats(sk), n)
+  eq(#stats(sk), n + 1, "exactly one event on the way off"); has(stats(sk)[n + 1], '"Usage stats off" "1.3.0"')
+  -- then nothing: tabs, links, switches, errors, a day later
+  sk:exec(sk:option("MeterTabMarket", "LeftMouseUpAction")); sk:exec(sk:option("MeterLogo", "LeftMouseUpAction"))
+  sk:exec(sk:option("Rainmeter", "MouseOverAction")); clock = clock + 90000; sk:tick(3); settle(sk)
+  eq(#stats(sk), n + 1, "nothing after")
   sk:exec(sk:option("Rainmeter", "ContextAction7")); has(readFile(sk.dir .. "/@Resources/Settings.inc"), "\nAnalytics=1\n")
-  sk:exec(sk:option("MeterTabMarket", "LeftMouseUpAction")); eq(#stats(sk), n + 1)
+  eq(#stats(sk), n + 2); has(stats(sk)[n + 2], '"Usage stats on" "1.3.0"')
+  sk:exec(sk:option("MeterTabMarket", "LeftMouseUpAction")); eq(#stats(sk), n + 3)
 end)
 ok("usage stats: HF alert level, fetch errors once an hour per endpoint, panel opens once per 30 minutes, 30 per hour cap", function()
   local sk = boot({ Wallets = W1 }, { lend = lendJson(1.28), points = false }); settle(sk)
@@ -664,6 +670,24 @@ ok("usage stats: HF alert level, fetch errors once an hour per endpoint, panel o
   eq(#statsNamed(sk, "Tab view"), 30, "capped per hour")
   clock = clock + 3600; sk:exec(sk:option("MeterTabMarket", "LeftMouseUpAction")); eq(#statsNamed(sk, "Tab view"), 31)
 end)
+ok("link origin: UTM after the existing query, the #ftw= marker with the OS from launch, none on an anchor, plain when off", function()
+  local sk = boot({ Wallets = W1 }); settle(sk); local t = T(sk)
+  eq(t._originUrl("https://flyingtulip.com/", "header-logo", "Windows 11"),
+    "https://flyingtulip.com/?utm_source=ft-widget&utm_medium=windows&utm_content=header-logo#ftw=windows.windows-11.1-3-0.header-logo")
+  eq(t._originUrl("https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=146&marketType=spot", "market-ft-price", "Windows 10"),
+    "https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=146&marketType=spot&utm_source=ft-widget&utm_medium=windows&utm_content=market-ft-price#ftw=windows.windows-10.1-3-0.market-ft-price")
+  eq(t._originUrl("https://flyingtulip.com/rewards/#my-activity", "account-points", "Windows 11"),
+    "https://flyingtulip.com/rewards/?utm_source=ft-widget&utm_medium=windows&utm_content=account-points#my-activity", "an anchor stays, UTM only")
+  eq(t._osSlug("Windows Server 2022"), "windows-server-2022"); eq(t._osSlug(nil), "windows")
+  -- the OS the stats script found at launch is used
+  writeFile(sk.res .. "UsageStats-os.txt", "Windows 11")
+  sk:exec(sk:option("MeterLogo", "LeftMouseUpAction"))
+  eq(sk.runs[#sk.runs], '"https://flyingtulip.com/?utm_source=ft-widget&utm_medium=windows&utm_content=header-logo#ftw=windows.windows-11.1-3-0.header-logo"')
+  -- off: the plain URL
+  local off = boot({ Wallets = W1, Analytics = "0" }); settle(off)
+  off:exec(off:option("MeterLogo", "LeftMouseUpAction")); eq(off.runs[#off.runs], '"https://flyingtulip.com/"')
+end)
+
 os.execute("rm -rf " .. TMP)
 print("\n" .. passed .. " passed, " .. failed .. " failed")
 if failed > 0 then os.exit(1) end

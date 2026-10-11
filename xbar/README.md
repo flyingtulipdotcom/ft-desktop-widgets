@@ -151,6 +151,22 @@ plugin settings. Nothing is sent while it is off.
 | HF alert shown | a health factor notification is shown | `level`: warning or danger (never the value or the wallet) |
 | Refresh | the refresh button is used | |
 | Fetch error | an API call fails, at most once an hour per endpoint | `endpoint`: ticker, fees, klines, lend, summary, positions, rewards, points, leaderboard, ftput |
+| Usage stats off, Usage stats on | the switch under Advanced is turned off (the last event) or back on | `os` |
+
+**Switching off** sends one last event, "Usage stats off" (platform, version, os), at that moment, and nothing after.
+Switching back on sends "Usage stats on".
+
+**Where a visit came from.** While usage stats are on, every flyingtulip.com page the widget opens carries an origin
+marker, so the website can count visits that came from a widget:
+
+- query parameters added after the ones the URL already has: `utm_source=ft-widget`, `utm_medium=<platform>`
+  (windows, macos or omarchy), `utm_content=<element id>`
+- and, unless the URL already has an in-page anchor (`#...`), a hash
+  `#ftw=<platform>.<os-slug>.<version>.<element>`: os-slug is the OS name in lowercase with dashes and no dots
+  (`windows-11`, `macos-15`, `arch-linux`), version has its dots replaced by dashes (`1-3-0`), element is the id below.
+
+Example: `https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=146&marketType=spot&utm_source=ft-widget&utm_medium=windows&utm_content=market-ft-price#ftw=windows.windows-11.1-3-0.market-ft-price`.
+With usage stats off, the plain URL is opened, with no parameters and no marker.
 
 Every event also carries `platform` (windows, macos or omarchy) and `version`. Each event name is sent at most 30 times
 an hour. Element ids, the same on every platform where the element exists: `header-logo`, `header-title`,

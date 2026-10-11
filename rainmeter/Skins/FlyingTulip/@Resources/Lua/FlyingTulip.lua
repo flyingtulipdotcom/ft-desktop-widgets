@@ -608,7 +608,7 @@ local function now() return os.time() end
 -- a wallet count bucket) are sent, by @Resources\UsageStats.ps1 in a hidden PowerShell, fire and forget. Never a
 -- wallet address, balance or position; any 0x address that slips into a value is replaced by ":address" here and
 -- again in the script. Nothing is sent while Analytics=0. Each event name is capped at 30 per hour.
-local SKIN_VERSION = "1.2.0"
+local SKIN_VERSION = "1.3.0"
 local STAT_CAP = 30
 local usage = { hour = -1, counts = {}, errAt = {}, openAt = -1e18, pageAt = -1e18 }
 local ADDRESS = "0x" .. string.rep("%x", 40)
@@ -647,6 +647,22 @@ local function fetchError(key)
   if now() - (usage.errAt[ep] or -1e18) < 3600 then return end
   usage.errAt[ep] = now()
   sendStat("Fetch error", { { "endpoint", ep } })
+end
+-- Where a visit to flyingtulip.com came from, for the website's own stats, only while usage stats are on:
+--   ?utm_source=ft-widget&utm_medium=windows&utm_content=<element>  (added to the query the URL already has)
+--   #ftw=windows.<os-slug>.<version, dots as dashes>.<element>     (left out when the URL already has an anchor)
+-- os-slug is the OS name in lowercase with dashes ("windows-11"), as UsageStats.ps1 found it at launch.
+local function osSlug(s)
+  local t = tostring(s or ""):lower():gsub("[^%w]+", "-"):gsub("^%-+", ""):gsub("%-+$", "")
+  return t ~= "" and t or "windows"
+end
+local function originUrl(url, element, os)
+  local el = tostring(element or ""):lower():gsub("[^%w%-]", "")
+  local base, hash = url:match("^([^#]*)#(.*)$")
+  base = base or url
+  local q = (base:find("?", 1, true) and "&" or "?") .. "utm_source=ft-widget&utm_medium=windows&utm_content=" .. el
+  if hash then return base .. q .. "#" .. hash end
+  return base .. q .. "#ftw=windows." .. osSlug(os) .. "." .. SKIN_VERSION:gsub("%.", "-") .. "." .. el
 end
 -- Every element that opens flyingtulip.com calls OpenLink(element, url): the click is counted, then the page opens.
 local function link(meter, url, element)
@@ -1424,6 +1440,7 @@ function OpenLink(element, url)
     url = tostring(url or "")
     if not url:match("^https://flyingtulip%.com/") then return end
     sendStat("Link click", { { "element", element }, { "url", url } })
+    if cfg.analytics then url = originUrl(url, element, readFile(resource("UsageStats-os.txt"))) end
     SK:Bang('["' .. url .. '"]')
   end)
 end
@@ -1444,7 +1461,10 @@ end
 -- Advanced: anonymous usage stats on or off (Settings.inc Analytics=1 or 0)
 function ToggleAnalytics()
   guard("ToggleAnalytics", function()
+    -- one last event when they go off (then nothing), one when they come back on
+    if cfg.analytics then sendStat("Usage stats off") end
     cfg.analytics = not cfg.analytics
+    if cfg.analytics then sendStat("Usage stats on") end
     SK:Bang("!WriteKeyValue", "Variables", "Analytics", cfg.analytics and "1" or "0", "#@#Settings.inc")
     banner(cfg.analytics and "Anonymous usage stats are on" or "Anonymous usage stats are off", C_TULIP300)
   end)
@@ -1530,4 +1550,5 @@ M._alert = { levelFor = levelFor, decideNotify = decideNotify, notifyText = noti
 M._tips = { earned = earnedTip, points = pointsTip }
 M._lowestHf, M._mergeChains, M._putGain, M._feesDayOverDay = lowestHf, mergeChains, putGain, feesDayOverDay
 M._state = function() return S, cfg end
+M._originUrl, M._osSlug = originUrl, osSlug
 FT_TEST = M

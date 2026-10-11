@@ -15,13 +15,17 @@ try {
       $props["$a".Substring(0, $i)] = ("$a".Substring($i + 1) -replace "0x[0-9a-fA-F]{40}", ":address")
     }
   }
-  if ($Name -eq "pageview") {
+  if ($Name -eq "pageview" -or $Name -eq "Usage stats off" -or $Name -eq "Usage stats on") {
     $os = "Windows"
     try {
       $caption = (Get-CimInstance Win32_OperatingSystem).Caption
       if ($caption -match "Windows (Server )?(\d+)") { $os = "Windows " + $Matches[1] + $Matches[2] }
     } catch {}
     $props["os"] = $os
+    # the skin adds the OS to the origin marker of the links it opens (see the README)
+    try { Set-Content -Path (Join-Path $PSScriptRoot "UsageStats-os.txt") -Value $os -NoNewline } catch {}
+  }
+  if ($Name -eq "pageview") {
     try {
       $exe = $RainmeterExe
       $v = (Get-Item $exe).VersionInfo.ProductVersion
