@@ -536,13 +536,15 @@ local function decideNotify(state, entry, cfg, nowSec)
   return st, notify
 end
 
+-- n.wallet (short address) names the wallet, so with several wallets the toast says which one
 local function notifyText(n)
   local hf = string.format("%.2f", n.hf)
+  local who = n.wallet and (n.wallet .. ": ") or ""
   if n.level == 2 then
     return "FT account near liquidation",
-      string.format("%s HF %s (liquidation below %.2f). Add collateral or repay now.", n.chain, hf, n.liqHf), "critical"
+      string.format("%s%s HF %s (liquidation below %.2f). Add collateral or repay now.", who, n.chain, hf, n.liqHf), "critical"
   end
-  return "FT account health low", string.format("%s HF %s (liquidation below %.2f).", n.chain, hf, n.liqHf), "normal"
+  return "FT account health low", string.format("%s%s HF %s (liquidation below %.2f).", who, n.chain, hf, n.liqHf), "normal"
 end
 
 local function threshold(v, fallback)
@@ -552,7 +554,7 @@ local function threshold(v, fallback)
 end
 
 -- ---------------------------------------------------------------- skin state and rendering
-local S, cfg, alertState
+local S, cfg
 local SK -- the SKIN object, set by Initialize() (it does not exist yet while this chunk runs)
 local io_ = io
 
@@ -561,7 +563,8 @@ local MEASURES = {
   price = "MeasurePrice", fees = "MeasureFees", feesSeries = "MeasureFeesSeries", klines = "MeasureKlines",
   lend = "MeasureLend", lend143 = "MeasureLend143", sum146 = "MeasureSum146", sum1 = "MeasureSum1", sum56 = "MeasureSum56",
   sum143 = "MeasureSum143", rewards = "MeasureRewards", points = "MeasurePoints", pos146 = "MeasurePos146",
-  pos1 = "MeasurePos1", pos56 = "MeasurePos56", puts = "MeasurePuts", rank = "MeasureRank"
+  pos1 = "MeasurePos1", pos56 = "MeasurePos56", puts = "MeasurePuts", rank = "MeasureRank", watch = "MeasureWatch",
+  watch143 = "MeasureWatch143"
 }
 -- the parts of /mm/lend the skin never reads: dropped unparsed, which keeps the 500 KB body cheap to decode
 local LEND_SKIP = { series = true, assets = true, userTransactions = true, marketsSummary = true,
@@ -599,42 +602,87 @@ local function dim(color) return (color:gsub(",%d+$", ",120")) end
 
 local function now() return os.time() end
 
+-- Wallet list: "0xA, 0xB" (commas, spaces, semicolons or new lines). Returns the valid wallets (lowercase, no
+-- duplicates, in order) and the entries that are not addresses.
+local function parseWallets(text)
+  local list, bad, seen = {}, {}, {}
+  for item in tostring(text or ""):gmatch("[^,;%s]+") do
+    local w = normalizeWallet(item)
+    if w == "" then bad[#bad + 1] = item
+    elseif not seen[w] then seen[w] = true; list[#list + 1] = w end
+  end
+  return list, bad
+end
+
+-- Wallets survive a reinstall: Settings.inc is the source (Rainmeter keeps its values when a newer .rmskin is
+-- installed over the skin), and a copy is kept in Rainmeter's own settings folder, outside the skin folder, so even
+-- a removed and re-added skin finds them again.
+local function backupPath()
+  local p = SK:ReplaceVariables("#SETTINGSPATH#")
+  if not p or p == "" or p:find("#", 1, true) then return nil end
+  if not p:match("[\\/]$") then p = p .. "\\" end
+  return p .. "FlyingTulip-wallets.txt"
+end
+
 local function buildConfig()
   local warn, crit = threshold(SK:GetVariable("HfWarn"), 1.40), threshold(SK:GetVariable("HfCritical"), 1.30)
   if crit > warn then crit = warn end
   local cd = num(SK:GetVariable("NotifyCooldownMin"))
   local ref = num(SK:GetVariable("RefreshSeconds")) or 60
-  local raw = tostring(SK:GetVariable("Wallet") or "")
-  raw = raw:gsub("^%s+", ""):gsub("%s+$", "")
+  local rot = num(SK:GetVariable("RotateSeconds")) or 60
+  -- Wallets is the list; Wallet is the single-wallet setting of 1.0.x, still read (and kept equal to the first wallet)
+  local listRaw = tostring(SK:GetVariable("Wallets") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local oneRaw = tostring(SK:GetVariable("Wallet") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local list, bad = parseWallets(listRaw .. "," .. oneRaw)
   return {
-    walletRaw = raw, wallet = normalizeWallet(raw), warn = warn, critical = crit,
+    wallets = list, badWallets = bad, walletRaw = listRaw .. oneRaw, wallet = list[1] or "",
+    warn = warn, critical = crit,
     cooldownSec = ((cd and cd >= 1) and cd or 30) * 60,
     notify = tostring(SK:GetVariable("Notifications") or "1") ~= "0",
     priceChain = (tonumber(SK:GetVariable("PriceChainId")) == 146) and 146 or 1,
-    refresh = math.max(15, ref)
+    refresh = math.max(15, ref),
+    rotate = math.max(10, rot)
   }
 end
 
-local function loadAlertState()
-  alertState = { level = 0, last1 = -1e18, last2 = -1e18 }
+-- Per-wallet alert state in State.txt, one line per wallet: 0x...=level,last1,last2
+-- (1.0.x wrote wallet=/level=/last1=/last2= lines for its one wallet; that is still read.)
+local function loadAlertStates()
+  local out = {}
   local txt = readFile(resource("State.txt"))
-  if not txt then return end
+  if not txt then return out end
   local kv = {}
-  for k, v in txt:gmatch("(%w+)=([^\r\n]*)") do kv[k] = v end
-  if kv.wallet == cfg.wallet then
-    alertState.level = tonumber(kv.level) or 0
-    alertState.last1 = tonumber(kv.last1) or -1e18
-    alertState.last2 = tonumber(kv.last2) or -1e18
+  for k, v in txt:gmatch("(%w+)=([^\r\n]*)") do
+    kv[k] = v
+    local lv, l1, l2 = v:match("^(%-?%d+),(%-?%d+),(%-?%d+)$")
+    if k:match("^0x%x+$") and lv then
+      out[k:lower()] = { level = tonumber(lv) or 0, last1 = (tonumber(l1) or 0) ~= 0 and tonumber(l1) or -1e18,
+        last2 = (tonumber(l2) or 0) ~= 0 and tonumber(l2) or -1e18 }
+    end
   end
+  if kv.wallet and kv.level and not out[kv.wallet] then
+    out[kv.wallet] = { level = tonumber(kv.level) or 0, last1 = tonumber(kv.last1) or -1e18, last2 = tonumber(kv.last2) or -1e18 }
+  end
+  return out
 end
-local function saveAlertState()
-  writeFile(resource("State.txt"), string.format("wallet=%s\nlevel=%d\nlast1=%d\nlast2=%d\n", cfg.wallet, alertState.level,
-    alertState.last1 > -1e17 and alertState.last1 or 0, alertState.last2 > -1e17 and alertState.last2 or 0))
+local function saveAlertStates()
+  local lines = {}
+  for _, w in ipairs(cfg.wallets) do
+    local a = S.w[w] and S.w[w].alert
+    if a then
+      lines[#lines + 1] = string.format("%s=%d,%d,%d", w, a.level, a.last1 > -1e17 and a.last1 or 0, a.last2 > -1e17 and a.last2 or 0)
+    end
+  end
+  writeFile(resource("State.txt"), table.concat(lines, "\n") .. "\n")
 end
 
 local function lendList()
   if not S.lend then return nil end
   return mergeChains({ S.lend, S.lend143 or {} })
+end
+local function walletIndex(w)
+  for i, x in ipairs(cfg.wallets) do if x == w then return i end end
+  return 0
 end
 
 local function pnlTotal()
@@ -667,7 +715,7 @@ local function deltaColor(v)
 end
 
 -- chart shapes -------------------------------------------------------------------------------------
-local CHART_W, CHART_H = 312, 48
+local CHART_W, CHART_H = 312, 64
 
 local function renderBars(meter, values)
   set(meter, "Shape", string.format("Rectangle 0,0,%d,%d,6 | Fill Color 20,18,32,255 | StrokeWidth 0", CHART_W, CHART_H))
@@ -711,7 +759,30 @@ local function renderLine(meter, values)
 end
 
 -- ---------------------------------------------------------------- render
-local POS_ROWS = 4
+local POS_ROWS = 10
+local PANEL_H = 424
+-- Three tabs so nothing needs scrolling: the header (wallet shown, switch, status, cog), the banner and the footer
+-- stay visible on every tab.
+local TAB_ORDER = { "market", "account", "positions" }
+local TAB_LABEL = { market = "MeterTabMarket", account = "MeterTabAccount", positions = "MeterTabPositions" }
+local TAB_METERS = {
+  market = { "MeterPriceLbl", "MeterPriceVal", "MeterFeesLbl", "MeterFeesVal", "MeterFeesChartLabel", "MeterFeesChart",
+    "MeterPriceChartLabel", "MeterPriceChart" },
+  account = { "MeterAccountHint", "MeterHfLbl", "MeterHfVal", "MeterHfC1", "MeterHfC2", "MeterHfC3", "MeterHfC4",
+    "MeterPnlLbl", "MeterPnlVal", "MeterEarnLbl", "MeterEarnVal", "MeterEarnD1", "MeterEarnD2", "MeterEarnD3",
+    "MeterPointsLbl", "MeterPointsVal", "MeterPointsD1", "MeterPointsD2", "MeterPutLbl", "MeterPutVal" },
+  positions = { "MeterPosHead", "MeterPos1", "MeterPos2", "MeterPos3", "MeterPos4", "MeterPos5", "MeterPos6", "MeterPos7",
+    "MeterPos8", "MeterPos9", "MeterPos10" },
+}
+local function validTab(t) return t == "market" or t == "account" or t == "positions" end
+
+local function renderTabs()
+  for _, name in ipairs(TAB_ORDER) do
+    local on = S.tab == name
+    for _, m in ipairs(TAB_METERS[name]) do set(m, "Hidden", on and "0" or "1") end
+    set(TAB_LABEL[name], "FontColor", on and C_TULIP300 or C_FAINT)
+  end
+end
 
 function M.render()
   if not S then return end
@@ -719,9 +790,15 @@ function M.render()
   local lowest = lendList() and lowestHf(lendList())
   local level = lowest and levelFor(lowest.hf, { warn = cfg.warn, critical = cfg.critical }, 0) or 0
   local liq = lowest and lowest.liqHf or DEFAULT_LIQ_HF
+  local n = #cfg.wallets
 
-  -- header
-  setText("MeterSub", cfg.wallet ~= "" and shortAddr(cfg.wallet) or "Market, fees and your account", C_FAINT)
+  -- header: the wallet shown, "i/n" and the switch icon when there are several
+  local sub = "Market, fees and your account"
+  if cfg.wallet ~= "" then
+    sub = shortAddr(cfg.wallet) .. (n > 1 and string.format("  %d/%d", walletIndex(cfg.wallet), n) or "")
+  end
+  setText("MeterSub", sub, cfg.wallet ~= "" and C_SUB or C_FAINT)
+  set("MeterSwitch", "Hidden", n > 1 and "0" or "1")
   local anyData = S.price or S.fees
   local ts = 0
   for _, v in pairs(S.ts) do if v > ts then ts = v end end
@@ -734,21 +811,23 @@ function M.render()
     setText("MeterStatus", "updated " .. os.date("%H:%M", ts), C_FAINT)
   end
 
-  -- warning state: panel border and banner
+  -- warning state: panel border and banner (for the wallet shown; a low wallet is always the one shown)
+  local who = n > 1 and (shortAddr(cfg.wallet) .. " ") or ""
   if level == 2 then
-    set("MeterBackground", "Shape", string.format("Rectangle 0,0,340,550,12 | Fill Color 14,14,17,240 | StrokeWidth 2 | Stroke Color %s", C_RED))
-    setText("MeterBanner", string.format("HF %.2f: near liquidation (below %.2f)", lowest.hf, liq), C_RED)
+    set("MeterBackground", "Shape", string.format("Rectangle 0,0,340,%d,12 | Fill Color 14,14,17,240 | StrokeWidth 2 | Stroke Color %s", PANEL_H, C_RED))
+    setText("MeterBanner", string.format("%sHF %.2f: near liquidation (below %.2f)", who, lowest.hf, liq), C_RED)
   elseif level == 1 then
-    set("MeterBackground", "Shape", string.format("Rectangle 0,0,340,550,12 | Fill Color 14,14,17,240 | StrokeWidth 2 | Stroke Color %s", C_AMBER))
-    setText("MeterBanner", string.format("HF %.2f: health factor is low (liquidation below %.2f)", lowest.hf, liq), C_AMBER)
+    set("MeterBackground", "Shape", string.format("Rectangle 0,0,340,%d,12 | Fill Color 14,14,17,240 | StrokeWidth 2 | Stroke Color %s", PANEL_H, C_AMBER))
+    setText("MeterBanner", string.format("%sHF %.2f: health factor is low (liquidation below %.2f)", who, lowest.hf, liq), C_AMBER)
   else
-    set("MeterBackground", "Shape", string.format("Rectangle 0,0,340,550,12 | Fill Color 14,14,17,240 | StrokeWidth 1 | Stroke Color %s", C_BORDER))
+    set("MeterBackground", "Shape", string.format("Rectangle 0,0,340,%d,12 | Fill Color 14,14,17,240 | StrokeWidth 1 | Stroke Color %s", PANEL_H, C_BORDER))
     setText("MeterBanner", "", C_AMBER)
   end
+  renderTabs()
 
   -- market: the FT price meters open the FT-ftUSD spot page on the chain being shown
   local mkt = marketUrl("FT-ftUSD", cfg.priceChain)
-  for _, m in ipairs({ "MeterMarketHead", "MeterPriceLbl", "MeterPriceVal", "MeterPriceChartLabel", "MeterPriceChart" }) do link(m, mkt) end
+  for _, m in ipairs({ "MeterPriceLbl", "MeterPriceVal", "MeterPriceChartLabel", "MeterPriceChart" }) do link(m, mkt) end
   if S.price then
     local ch = S.price.changePct24h
     local c = stale("price") and dim(deltaColor(ch)) or deltaColor(ch)
@@ -775,35 +854,61 @@ function M.render()
 
   -- account
   local hasWallet = cfg.wallet ~= ""
-  local function acct(meter, text, color) setText(meter, hasWallet and text or "", color or C_TEXT) end
+  local details = { "MeterHfC1", "MeterHfC2", "MeterHfC3", "MeterHfC4", "MeterEarnD1", "MeterEarnD2", "MeterEarnD3",
+    "MeterPointsD1", "MeterPointsD2" }
   if not hasWallet then
-    setText("MeterAccountHint", cfg.walletRaw ~= "" and "Wallet is not a valid address (0x + 40 hex characters)"
-      or "Add your wallet to see health factor, PnL, FT earned, points, ftPUT and positions. Click 'Set wallet'.",
-      cfg.walletRaw ~= "" and C_RED or C_SUB)
-    for _, m in ipairs({ "MeterHfVal", "MeterPnlVal", "MeterEarnVal", "MeterPointsVal", "MeterPutVal", "MeterPosHead" }) do setText(m, "") end
-    for i = 1, POS_ROWS do setText("MeterPos" .. i, "") end
+    setText("MeterAccountHint", #cfg.badWallets > 0 and ("Not a valid address: " .. tostring(cfg.badWallets[1]):sub(1, 24) .. " (0x + 40 hex characters)")
+      or "Add a wallet to see health factor, PnL, FT earned, points, ftPUT and positions: click the cog at the top right, or 'Wallets' below.",
+      #cfg.badWallets > 0 and C_RED or C_SUB)
+    for _, m in ipairs({ "MeterHfVal", "MeterPnlVal", "MeterEarnVal", "MeterPointsVal", "MeterPutVal" }) do setText(m, "") end
     for _, m in ipairs({ "MeterHfLbl", "MeterPnlLbl", "MeterEarnLbl", "MeterPointsLbl", "MeterPutLbl" }) do setText(m, "") end
+    for _, m in ipairs(details) do setText(m, "") end
     for _, m in ipairs({ "MeterEarnLbl", "MeterEarnVal", "MeterPointsLbl", "MeterPointsVal" }) do tip(m, "") end
+    setText("MeterPosHead", "Add a wallet to see its open positions.", C_SUB)
+    for i = 1, POS_ROWS do setText("MeterPos" .. i, "") end
   else
     setText("MeterAccountHint", "")
     local lbl = { MeterHfLbl = "Health factor", MeterPnlLbl = "PnL (unrealized)", MeterEarnLbl = "FT earned, all time", MeterPointsLbl = "Points, all chains", MeterPutLbl = "ftPUT gain" }
     for m, v in pairs(lbl) do setText(m, v, C_FAINT) end
+    for _, m in ipairs(details) do setText(m, "") end
     local l = lendList()
     if l then
       if lowest then
         local c = level == 2 and C_RED or (level == 1 and C_AMBER or C_GREEN)
         setText("MeterHfVal", fmtHf(lowest.hf) .. "  " .. lowest.name, stale("lend") and dim(c) or c)
       else setText("MeterHfVal", INF .. "  no debt", C_GREEN) end
+      local row = 0
+      for _, c in ipairs(l) do
+        if row < 4 and (c.hf or (c.debtUsd or 0) > 0 or (c.equityUsd or 0) > 0) then
+          row = row + 1
+          local eqText = c.equityUsd and ("  equity " .. fmtUsd(c.equityUsd)) or ""
+          setText("MeterHfC" .. row, c.hf and string.format("%-9s HF %s  debt %s%s", c.name, fmtHf(c.hf), fmtUsd(c.debtUsd or 0), eqText)
+            or string.format("%-9s no debt%s", c.name, eqText), C_SUB)
+        end
+      end
     else setText("MeterHfVal", "unavailable", C_FAINT) end
     local pnl = pnlTotal()
     if pnl then setText("MeterPnlVal", fmtSignedUsd(pnl), deltaColor(pnl)) else setText("MeterPnlVal", "unavailable", C_FAINT) end
-    if S.rewards then
-      setText("MeterEarnVal", fmtFt(S.rewards.totalFt) .. " FT", C_TEXT)
+    local rw = S.rewards
+    if rw then
+      setText("MeterEarnVal", fmtFt(rw.totalFt) .. " FT", C_TEXT)
+      if rw.sftFt then
+        setText("MeterEarnD1", string.format("sftUSD yield %s FT  (claimed %s, pending %s)", fmtFt(rw.sftFt), fmtFt(rw.sftClaimed), fmtFt(rw.sftPending)), C_SUB)
+        setText("MeterEarnD2", string.format("Lend rewards %s FT  (received %s, pending %s)", fmtFt(rw.lendFt), fmtFt(rw.lendReceived), fmtFt(rw.lendPending)), C_SUB)
+        local by = {}
+        for _, c in ipairs(rw.chains or {}) do if c.sft + c.lend >= 0.005 then by[#by + 1] = c.name .. " " .. fmtFt(c.sft + c.lend) end end
+        setText("MeterEarnD3", #by > 0 and ("By chain: " .. table.concat(by, ", ")) or "", C_FAINT)
+      end
     else setText("MeterEarnVal", "unavailable", C_FAINT) end
-    tip("MeterEarnVal", earnedTip(S.rewards)); tip("MeterEarnLbl", earnedTip(S.rewards))
+    tip("MeterEarnVal", earnedTip(rw)); tip("MeterEarnLbl", earnedTip(rw))
     if S.points then
       local r = S.rank
       setText("MeterPointsVal", fmtPoints(S.points.total) .. (r and ("  rank " .. thousands(r.rank)) or ""), C_TEXT)
+      local by = {}
+      for _, c in ipairs(S.points.chains or {}) do by[#by + 1] = c.name .. " " .. fmtPoints(c.points) end
+      setText("MeterPointsD1", table.concat(by, ", "), C_SUB)
+      setText("MeterPointsD2", r and string.format("Rank %s of %s, all chains", thousands(r.rank), thousands(r.total))
+        or "flyingtulip.com shows one chain at a time", C_FAINT)
     else setText("MeterPointsVal", "unavailable", C_FAINT) end
     tip("MeterPointsVal", pointsTip(S.points, S.rank)); tip("MeterPointsLbl", pointsTip(S.points, S.rank))
     if S.puts then
@@ -813,7 +918,7 @@ function M.render()
     else setText("MeterPutVal", "none", C_FAINT) end
     local pos = allPositions()
     if pos then
-      setText("MeterPosHead", #pos > 0 and ("Positions: " .. #pos .. " open") or "Positions: none open", C_FAINT)
+      setText("MeterPosHead", #pos > 0 and ("Positions of " .. shortAddr(cfg.wallet) .. ": " .. #pos .. " open") or "Positions: none open", C_FAINT)
       for i = 1, POS_ROWS do
         local p = pos[i]
         if p then
@@ -832,6 +937,16 @@ function M.render()
   SK:Bang("!Redraw")
 end
 
+-- tab labels: show that tab and remember it in Settings.inc (no refresh needed)
+function ShowTab(name)
+  M.guard("ShowTab", function()
+    if not validTab(name) or not S then return end
+    S.tab = name
+    SK:Bang("!WriteKeyValue", "Variables", "Tab", name, "#@#Settings.inc")
+    M.render()
+  end)
+end
+
 -- ---------------------------------------------------------------- notifications
 local function notifyDesktop(title, body, level)
   if not cfg.notify then return end
@@ -841,17 +956,72 @@ local function notifyDesktop(title, body, level)
   SK:Bang('["powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "#@#Notify.ps1" "#@#Notify.txt"]')
 end
 
-local function evaluateAlerts()
-  local l = lendList()
-  if not l or cfg.wallet == "" then return end
-  local st, n = decideNotify(alertState, lowestHf(l), { warn = cfg.warn, critical = cfg.critical, cooldownSec = cfg.cooldownSec }, now())
-  alertState = st
-  saveAlertState()
+-- ---------------------------------------------------------------- wallets: per-wallet state, rotation, watch
+-- The skin shows one wallet at a time (S.cur). Its account values live directly in S (S.lend, S.rewards, ...) so the
+-- renderer reads them as before; the other wallets' values are parked in S.w[addr] and swapped in on a switch.
+local ACCOUNT_KEYS = { "lend", "lend143", "sum146", "sum1", "sum56", "sum143", "rewards", "points", "pos146", "pos1", "pos56", "puts" }
+
+local function walletState(w)
+  local W = S.w[w]
+  if not W then
+    W = { data = {}, ts = {}, err = {}, alert = { level = 0, last1 = -1e18, last2 = -1e18 } }
+    S.w[w] = W
+  end
+  return W
+end
+local function stash()
+  if S.cur == "" then return end
+  local W = walletState(S.cur)
+  for _, k in ipairs(ACCOUNT_KEYS) do W.data[k], W.ts[k], W.err[k] = S[k], S.ts[k], S.err[k] end
+  W.rank, W.rankAt, W.lendRate = S.rank, S.rankAt, S.lendRate
+end
+local function unstash(w)
+  local W = walletState(w)
+  for _, k in ipairs(ACCOUNT_KEYS) do S[k], S.ts[k], S.err[k] = W.data[k], W.ts[k], W.err[k] end
+  S.rank, S.rankAt, S.lendRate = W.rank, W.rankAt, W.lendRate or cfg.refresh
+end
+-- the merged lend chains of any wallet (the shown one reads S, the others their parked values)
+local function lendOf(w)
+  local lend, l143
+  if w == S.cur then lend, l143 = S.lend, S.lend143 else local W = walletState(w); lend, l143 = W.data.lend, W.data.lend143 end
+  if not lend then return nil end
+  return mergeChains({ lend, l143 or {} })
+end
+local function hasDebt(list)
+  for _, c in ipairs(list or {}) do if c.debtUsd and c.debtUsd > 0.01 then return true end end
+  return false
+end
+-- the wallet whose health factor is at or below the warning threshold (the lowest one when several are), else nil
+local function pinnedWallet()
+  local best, bestHf
+  for _, w in ipairs(cfg.wallets) do
+    if walletState(w).alert.level >= 1 then
+      local lo = lowestHf(lendOf(w) or {})
+      if lo and (not bestHf or lo.hf < bestHf) then best, bestHf = w, lo.hf end
+    end
+  end
+  return best
+end
+
+local switchTo -- defined below (alerts switch to a wallet that turns low)
+
+-- Alerts for one wallet, from a fresh /mm/lend read only: once per crossing, per wallet, naming the wallet.
+local function evaluateAlertsFor(w, list)
+  if not list or w == "" then return end
+  local W = walletState(w)
+  local prev = W.alert.level
+  local st, n = decideNotify(W.alert, lowestHf(list), { warn = cfg.warn, critical = cfg.critical, cooldownSec = cfg.cooldownSec }, now())
+  W.alert = st
+  saveAlertStates()
   if n then
+    n.wallet = shortAddr(w)
     local title, body, level = notifyText(n)
     notifyDesktop(title, body, level)
   end
+  -- a wallet that just turned low is shown at once, and stays shown while it is low (see Update)
+  if st.level > prev and w ~= S.cur then switchTo(w) end
 end
+local function evaluateAlerts() evaluateAlertsFor(S.cur, lendList()) end
 
 -- ---------------------------------------------------------------- rank search (leaderboard is sorted by points)
 local rank = { active = false }
@@ -909,20 +1079,107 @@ local function load(key)
   if not m then return nil end
   local txt = m:GetStringValue()
   if type(txt) == "string" and txt:match("^%s*null%s*$") then return JSON_NULL end
-  return jsonDecode(txt, key:sub(1, 4) == "lend" and LEND_SKIP or nil)
+  return jsonDecode(txt, (key:sub(1, 4) == "lend" or key:sub(1, 5) == "watch") and LEND_SKIP or nil)
 end
+
+local LEND_IGNORE = 10 -- seconds after a switch during which an unforced /mm/lend answer is the previous wallet's
+local function lendRateFor(debt) return debt and cfg.refresh or math.max(cfg.refresh, LEND_IDLE_RATE) end
 
 -- /mm/lend is the heavy call: every RefreshSeconds while anything is borrowed (health factor alerts), every
 -- LEND_IDLE_RATE seconds otherwise. UpdateRate counts measure updates, one per second at Update=1000.
+local function applyLendRate(rate)
+  S.lendRate = rate
+  for _, m in ipairs({ "MeasureLend", "MeasureLend143" }) do SK:Bang("!SetOption", m, "UpdateRate", tostring(rate)) end
+end
 local function tuneLendRate()
   if not S.lend then return end -- decide on the all-chains answer, never on Monad alone
-  local debt = false
-  for _, c in ipairs(lendList() or {}) do if c.debtUsd and c.debtUsd > 0.01 then debt = true end end
-  local rate = debt and cfg.refresh or math.max(cfg.refresh, LEND_IDLE_RATE)
-  if rate ~= S.lendRate then
-    S.lendRate = rate
-    for _, m in ipairs({ "MeasureLend", "MeasureLend143" }) do SK:Bang("!SetOption", m, "UpdateRate", tostring(rate)) end
+  local rate = lendRateFor(hasDebt(lendList()))
+  if rate ~= S.lendRate then applyLendRate(rate) end
+end
+
+-- Show wallet w: park the current wallet's values, bring w's back, point the account measures at w and fetch.
+-- A WebParser answer does not say which wallet it is for, and a fetch started for the previous wallet may still be in
+-- flight: "Update" drops it (and refetches for w). /mm/lend is the one exception, to keep the 500 KB read rare: for a
+-- wallet without debt whose lend value is fresh it is not refetched, and any lend answer in the next LEND_IGNORE
+-- seconds is dropped instead (it can only be the previous wallet's: w's own next read starts a full rate later).
+local function forceFetch(measure)
+  SK:Bang("!CommandMeasure", measure, "Update")
+  SK:Bang("!UpdateMeasure", measure)
+end
+switchTo = function(w)
+  if w == "" or w == S.cur then S.shownAt = now(); return end
+  stash()
+  if rank.active then rankStop() end
+  S.cur, cfg.wallet = w, w
+  unstash(w)
+  S.shownAt = now()
+  SK:Bang("!SetVariable", "CurWallet", w)
+  applyLendRate(S.lendRate or cfg.refresh)
+  local W = walletState(w)
+  local keepLend = not W.debt and S.ts.lend and now() - S.ts.lend < (S.lendRate or cfg.refresh)
+  S.lendIgnoreUntil = keepLend and (now() + LEND_IGNORE) or nil
+  for _, k in ipairs(ACCOUNT_KEYS) do
+    if not (keepLend and (k == "lend" or k == "lend143")) then forceFetch(MEASURES[k]) end
   end
+  M.render()
+end
+local function nextWallet()
+  local n = #cfg.wallets
+  if n == 0 then return "" end
+  return cfg.wallets[walletIndex(S.cur) % n + 1]
+end
+
+-- Background health watch for the wallets that are not shown: one /mm/lend read at a time through MeasureWatch,
+-- each wallet every RefreshSeconds while it has debt, every 10 minutes otherwise. Only this read and the shown
+-- wallet's own reads raise alerts.
+local watch = { active = false, last = 0 }
+local function watchStop()
+  watch.active = false
+  SK:Bang("!DisableMeasure", "MeasureWatch")
+  SK:Bang("!DisableMeasure", "MeasureWatch143")
+end
+local function watchStep()
+  if cfg.wallet == "" or #cfg.wallets < 2 then return end
+  if watch.active then
+    if now() - watch.at > 90 then watchStop() end -- no answer: try again later
+    return
+  end
+  local n = #cfg.wallets
+  for i = 1, n do
+    local idx = (watch.last + i - 1) % n + 1
+    local w = cfg.wallets[idx]
+    if w ~= S.cur then
+      local W = walletState(w)
+      local due = (not W.ts.lend or now() - W.ts.lend >= lendRateFor(W.debt)) and (not W.watchErr or now() - W.watchErr >= 60)
+      if due then
+        watch = { active = true, addr = w, at = now(), last = idx, pending = 2 }
+        SK:Bang("!SetVariable", "WatchWallet", w)
+        SK:Bang("!EnableMeasure", "MeasureWatch")
+        SK:Bang("!EnableMeasure", "MeasureWatch143")
+        forceFetch("MeasureWatch")
+        forceFetch("MeasureWatch143")
+        return
+      end
+    end
+  end
+end
+-- One answer of a watch read (key watch: all chains, watch143: Monad). Alerts are evaluated once both are in, on the
+-- merged chains. An unusable all-chains answer fails the read (retried after a minute); Monad may be absent.
+local function watchIngest(key, body)
+  if not watch.active then return end
+  local v = body and body ~= JSON_NULL and parseLend(body)
+  if key == "watch" then watch.main = v or false else watch.m143 = v or {} end
+  watch.pending = watch.pending - 1
+  if watch.pending > 0 then return end
+  local w, main, m143 = watch.addr, watch.main, watch.m143 or {}
+  watchStop()
+  if not main then walletState(w).watchErr = now(); return end
+  if w == S.cur then return end -- shown meanwhile: its own reads (forced at the switch) are the ones to use
+  local W = walletState(w)
+  W.data.lend, W.data.lend143, W.ts.lend, W.ts.lend143, W.err.lend, W.watchErr = main, m143, now(), now(), nil, nil
+  local list = mergeChains({ main, m143 })
+  W.debt = hasDebt(list)
+  evaluateAlertsFor(w, list)
 end
 
 -- parse(body) -> value or nil (nil = unusable, keep the last good value)
@@ -939,6 +1196,8 @@ function M.ingest(key, body)
     M.render()
     return
   end
+  if key == "watch" or key == "watch143" then watchIngest(key, body); M.render(); return end
+  if (key == "lend" or key == "lend143") and S.lendIgnoreUntil and now() < S.lendIgnoreUntil then return end
   local parse = PARSE[key]
   if body == JSON_NULL then body = (key:sub(1, 3) == "pos") and {} or nil end
   if not parse or body == nil then return end
@@ -952,7 +1211,10 @@ function M.ingest(key, body)
   end
   S.ts[key] = now()
   S.err[key] = nil
-  if key == "lend" or key == "lend143" then evaluateAlerts(); tuneLendRate() end
+  if key == "lend" or key == "lend143" then
+    walletState(S.cur).debt = hasDebt(lendList())
+    evaluateAlerts(); tuneLendRate()
+  end
   if key == "points" then rankStart() end
   M.render()
 end
@@ -986,6 +1248,7 @@ function OnError(key)
   -- keep the last value; it is dimmed and flagged stale once older than 3 refresh intervals
   guard("OnError(" .. tostring(key) .. ")", function()
     if not S then return end
+    if key == "watch" or key == "watch143" then watchIngest(key, nil); return end
     S.err[key] = now()
     if key == "rank" and rank.active then rankStop() end
     M.render()
@@ -995,21 +1258,74 @@ end
 -- InputText's OnDismissAction (Escape or a click elsewhere): put the banner back
 function Render() guard("Render", M.render) end
 
--- ---------------------------------------------------------------- wallet input
-function SetWallet(text)
-  guard("SetWallet", function()
-    local t = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
-    if t ~= "" and normalizeWallet(t) == "" then
-      SK:Bang("!SetOption", "MeterBanner", "Text", "Not a valid address (0x + 40 hex characters)")
-      SK:Bang("!SetOption", "MeterBanner", "FontColor", C_RED)
-      SK:Bang("!UpdateMeter", "MeterBanner")
-      SK:Bang("!Redraw")
-      return
-    end
-    -- the file path is left as #@# for Rainmeter to expand, so a non-ASCII profile path still works
-    SK:Bang("!WriteKeyValue", "Variables", "Wallet", t == "" and "" or normalizeWallet(t), "#@#Settings.inc")
-    os.remove(resource("State.txt"))
-    SK:Bang("!Refresh")
+-- ---------------------------------------------------------------- wallet list (UI only: the cog, the Wallets button,
+-- the right-click menu). Saved to Settings.inc (Wallets, plus Wallet = the first one for 1.0.x) and to the backup.
+local function banner(text, color)
+  SK:Bang("!SetOption", "MeterBanner", "Text", clean(text))
+  SK:Bang("!SetOption", "MeterBanner", "FontColor", color)
+  SK:Bang("!UpdateMeter", "MeterBanner")
+  SK:Bang("!Redraw")
+end
+local function writeBackup(list)
+  local p = backupPath()
+  if p then writeFile(p, table.concat(list, "\n") .. "\n") end
+end
+local function saveWallets(list)
+  -- the file path is left as #@# for Rainmeter to expand, so a non-ASCII profile path still works
+  SK:Bang("!WriteKeyValue", "Variables", "Wallets", table.concat(list, ", "), "#@#Settings.inc")
+  SK:Bang("!WriteKeyValue", "Variables", "Wallet", list[1] or "", "#@#Settings.inc")
+  writeBackup(list)
+  SK:Bang("!Refresh")
+end
+local function badText(bad) return "Not a valid address: " .. tostring(bad[1]):sub(1, 24) .. " (0x + 40 hex characters)" end
+
+-- the whole list from the settings box: add, edit or remove addresses in one line; empty clears every wallet
+function SetWallets(text)
+  guard("SetWallets", function()
+    local list, bad = parseWallets(text)
+    if #bad > 0 then banner(badText(bad), C_RED); return end
+    saveWallets(list)
+  end)
+end
+SetWallet = SetWallets -- 1.0.x name (an old Main.ini still calls it)
+
+-- "Add wallet...": every address in the text that is not in the list yet goes to the end
+function AddWallet(text)
+  guard("AddWallet", function()
+    local add, bad = parseWallets(text)
+    if #bad > 0 then banner(badText(bad), C_RED); return end
+    if #add == 0 then Render(); return end
+    local list = {}
+    for _, w in ipairs(cfg.wallets) do list[#list + 1] = w end
+    for _, w in ipairs(add) do if walletIndex(w) == 0 then list[#list + 1] = w end end
+    saveWallets(list)
+  end)
+end
+
+function RemoveShownWallet()
+  guard("RemoveShownWallet", function()
+    if cfg.wallet == "" then return end
+    local list = {}
+    for _, w in ipairs(cfg.wallets) do if w ~= cfg.wallet then list[#list + 1] = w end end
+    saveWallets(list)
+  end)
+end
+
+function NextWallet()
+  guard("NextWallet", function()
+    if #cfg.wallets > 1 then switchTo(nextWallet()) end
+  end)
+end
+
+-- opens the settings box: batch 1 edits the whole list, batch 2 adds to it
+function OpenWallets(batch)
+  guard("OpenWallets", function()
+    local add = tonumber(batch) == 2
+    SK:Bang("!SetVariable", "Wallets", table.concat(cfg.wallets, ", "))
+    SK:Bang("!UpdateMeasure", "MeasureInput")
+    banner(add and "Paste a wallet (0x...) to add and press Enter"
+      or "Wallets, comma separated. Enter saves. Right-click the skin for more", C_TULIP300)
+    SK:Bang("!CommandMeasure", "MeasureInput", "ExecuteBatch " .. (add and "2" or "1"))
   end)
 end
 
@@ -1018,16 +1334,40 @@ function Initialize()
   guard("Initialize", function()
     SK = SKIN
     cfg = buildConfig()
-    S = { ts = {}, err = {}, startedAt = now(), lendRate = cfg.refresh }
+    -- nothing in Settings.inc (a fresh install, or a skin folder replaced by hand): take the wallets kept outside it
+    if cfg.walletRaw == "" then
+      local p = backupPath()
+      local saved = p and readFile(p)
+      local list = parseWallets(saved or "")
+      if #list > 0 then
+        SK:Bang("!WriteKeyValue", "Variables", "Wallets", table.concat(list, ", "), "#@#Settings.inc")
+        SK:Bang("!WriteKeyValue", "Variables", "Wallet", list[1], "#@#Settings.inc")
+        cfg.wallets, cfg.wallet, cfg.walletRaw = list, list[1], table.concat(list, ", ")
+      end
+    elseif #cfg.wallets > 0 then
+      local p = backupPath()
+      local want = table.concat(cfg.wallets, "\n") .. "\n"
+      if p and readFile(p) ~= want then writeBackup(cfg.wallets) end
+    end
+    local tab = tostring(SK:GetVariable("Tab") or ""):lower()
+    if not validTab(tab) then tab = cfg.wallet ~= "" and "account" or "market" end
+    S = { ts = {}, err = {}, startedAt = now(), lendRate = cfg.refresh, w = {}, cur = cfg.wallet, shownAt = now(), tab = tab }
     rank = { active = false }
-    loadAlertState()
+    watch = { active = false, last = 0 }
+    local states = loadAlertStates()
+    for _, w in ipairs(cfg.wallets) do
+      local a = states[w]
+      if a then walletState(w).alert = { level = a.level, last1 = a.last1, last2 = a.last2 } else walletState(w) end
+    end
   end)
 end
 
 -- called by the skin's OnRefreshAction once every meter and measure exists
 function OnLoaded()
   guard("OnLoaded", function()
+    SK:Bang("!SetVariable", "Wallets", table.concat(cfg.wallets, ", "))
     if cfg.wallet ~= "" then
+      SK:Bang("!SetVariable", "CurWallet", cfg.wallet)
       SK:Bang("!EnableMeasureGroup", "Account")
     else
       SK:Bang("!DisableMeasureGroup", "Account")
@@ -1036,20 +1376,31 @@ function OnLoaded()
   end)
 end
 
+-- Once a second (Update=1000): rotate every RotateSeconds through the wallets, except while one is low (it stays
+-- shown, and a manual switch away from it comes back at the next rotation), and run the background health watch.
 local ticks = 0
 function Update()
   ticks = ticks + 1
-  if S and ticks % 30 == 0 then guard("Update", M.render) end -- ages the "updated" label and dims stale values
+  if not S then return 0 end
+  guard("Update", function()
+    if #cfg.wallets > 1 and now() - S.shownAt >= cfg.rotate then
+      local pin = pinnedWallet()
+      switchTo(pin or nextWallet())
+    end
+    watchStep()
+    if ticks % 30 == 0 then M.render() end -- ages the "updated" label and dims stale values
+  end)
   return 0
 end
 
 -- exposed for the offline tests (Rainmeter itself only calls the globals above)
 M._parse = { fees = parseFees, price = parsePrice, lend = parseLend, summary = parseSummary, rewards = parseRewards,
   puts = parsePuts, points = parsePoints, positions = parsePositions, feesSeries = parseFeesSeries, klines = parseKlines,
-  rankInPage = rankInPage }
+  rankInPage = rankInPage, wallets = parseWallets }
 M._fmt = { usd = fmtUsd, signed = fmtSignedUsd, price = fmtPrice, hf = fmtHf, pct = fmtPct, ft = fmtFt, points = fmtPoints,
   thousands = thousands, wallet = normalizeWallet, rawUnits = rawUnits }
 M._alert = { levelFor = levelFor, decideNotify = decideNotify, notifyText = notifyText, threshold = threshold }
 M._tips = { earned = earnedTip, points = pointsTip }
 M._lowestHf, M._mergeChains, M._putGain, M._feesDayOverDay = lowestHf, mergeChains, putGain, feesDayOverDay
+M._state = function() return S, cfg end
 FT_TEST = M

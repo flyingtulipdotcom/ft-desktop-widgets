@@ -12,9 +12,18 @@
     `OnConnectErrorAction`, and `!CommandMeasure <measure> "Update"` forces a refetch.
   - Bangs from Lua and from actions run as they would in Rainmeter: `!SetOption` (an empty value deletes the option),
     `!WriteKeyValue`, `!EnableMeasureGroup` and the others, plus `[\NNNN]` character references.
-  - The InputText box can be opened, typed into and dismissed.
+  - The InputText box can be opened with `ExecuteBatch N` (only CommandN runs, and its `DefaultValue=""` override is
+    honoured), typed into and dismissed. `#SETTINGSPATH#` can point at a test folder.
 - The tests then drive it with recorded API payloads (`test/fixtures`, including a trimmed real `/mm/lend`). They check:
-  - the load order and the Set wallet flow, from the button and from the right-click menu
+  - the load order and the wallet list flow, from the cog, the Wallets button and the right-click menu (add, edit the
+    list, remove the wallet shown, empty clears)
+  - several wallets: the header ("0x1111..1111  1/2"), the switch icon, rotation every `RotateSeconds`, values kept
+    per wallet, the background health check of hidden wallets (one at a time, every 10 minutes without debt), a hidden
+    wallet going low shown at once with a toast naming it and kept shown while low, a 1.0.x `Wallet=` and
+    `State.txt` carried over, wallets restored from the copy outside the skin folder
+  - tabs: one tab's meters at a time, the choice written to `Settings.inc` and restored, header and footer always
+    shown, every meter above the footer (nothing cut off)
+  - FT earned and points broken down on the Account tab (sftUSD yield and Lend, per chain; points per chain, rank)
   - the JSON decoder, including skipped keys, and a 500 KB `/mm/lend` body
   - every parser, the formatting, the alert state machine
   - no wallet, a full wallet, no debt (the infinity sign, `/mm/lend` slowed to every 10 minutes), positions answered
@@ -26,7 +35,8 @@
   - a Lua error showing on the skin
 - `FT_SKIN_DIR=<folder> lua5.1 test/run.lua` runs the same tests against another copy of the skin. Against the v1.0.0
   release they fail with `Script Initialize() failed: FlyingTulip.lua:497: attempt to index upvalue 'SK' (a nil value)`.
-- `lua5.1 test/live.lua [0x...]` runs the skin against the live public API (curl) and prints every meter.
+- `lua5.1 test/live.lua [0xA,0xB]` runs the skin against the live public API (curl) and prints every meter, for each
+  wallet in turn.
 - `node test/lint.js` checks:
   - INI structure and cross references
   - every WebParser and InputText option is one Rainmeter reads (a misspelt action is silently ignored)
@@ -69,7 +79,9 @@ Wine could not cover everything:
 1. Install Rainmeter 4.5+, then run `irm https://raw.githubusercontent.com/flyingtulipdotcom/ft-desktop-widgets/main/rainmeter/install.ps1 | iex`
    (or open the `.rmskin` from the latest release). Within a few seconds the price, fees and both charts appear and the
    header says "updated HH:MM". Rainmeter's log (*Manage > Log*) shows any WebParser or Lua error.
-2. Click **Set wallet**, paste a wallet that has debt, press Enter. The skin reloads and fills the account rows.
+2. Click the **cog** (top right), paste a wallet that has debt, press Enter. The skin reloads and fills the Account
+   tab. Right-click > *Add a wallet...*, add a second one: the header shows "1/2" and the switch icon; click it.
+   Click the three tabs; refresh the skin and check the last tab comes back.
 3. Force an alert: in `Settings.inc` set `HfWarn=9` and `HfCritical=8`, refresh the skin. The border and banner turn red
    and one toast appears. Refreshing again does not repeat it (delete `@Resources\State.txt` to re-arm). Put the
    values back.

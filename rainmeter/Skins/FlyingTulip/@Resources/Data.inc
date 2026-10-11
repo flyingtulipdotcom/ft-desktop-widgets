@@ -11,7 +11,7 @@ StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
 Group=Data
 FinishAction=[!CommandMeasure MeasureScript "OnData('price')"]
 OnConnectErrorAction=[!CommandMeasure MeasureScript "OnError('price')"]
@@ -25,7 +25,7 @@ StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
 Group=Data
 FinishAction=[!CommandMeasure MeasureScript "OnData('fees')"]
 OnConnectErrorAction=[!CommandMeasure MeasureScript "OnError('fees')"]
@@ -39,7 +39,7 @@ StringIndex=1
 UpdateRate=600
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
 Group=Data
 FinishAction=[!CommandMeasure MeasureScript "OnData('feesSeries')"]
 OnConnectErrorAction=[!CommandMeasure MeasureScript "OnError('feesSeries')"]
@@ -53,7 +53,7 @@ StringIndex=1
 UpdateRate=600
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
 Group=Data
 FinishAction=[!CommandMeasure MeasureScript "OnData('klines')"]
 OnConnectErrorAction=[!CommandMeasure MeasureScript "OnError('klines')"]
@@ -61,13 +61,14 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('klines')"]
 
 [MeasureLend]
 Measure=WebParser
-URL=https://api.flyingtulip.com/mm/lend?user=#Wallet#
+URL=https://api.flyingtulip.com/mm/lend?user=#CurWallet#
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('lend')"]
@@ -76,13 +77,14 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('lend')"]
 
 [MeasureLend143]
 Measure=WebParser
-URL=https://api.flyingtulip.com/mm/lend?user=#Wallet#&chainId=143
+URL=https://api.flyingtulip.com/mm/lend?user=#CurWallet#&chainId=143
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('lend143')"]
@@ -91,13 +93,14 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('lend143')"]
 
 [MeasureSum146]
 Measure=WebParser
-URL=https://api.flyingtulip.com/mm/spot/account/summary?address=#Wallet#&chainId=146
+URL=https://api.flyingtulip.com/mm/spot/account/summary?address=#CurWallet#&chainId=146
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('sum146')"]
@@ -106,13 +109,14 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('sum146')"]
 
 [MeasureSum1]
 Measure=WebParser
-URL=https://api.flyingtulip.com/mm/spot/account/summary?address=#Wallet#&chainId=1
+URL=https://api.flyingtulip.com/mm/spot/account/summary?address=#CurWallet#&chainId=1
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('sum1')"]
@@ -121,13 +125,14 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('sum1')"]
 
 [MeasureSum56]
 Measure=WebParser
-URL=https://api.flyingtulip.com/mm/spot/account/summary?address=#Wallet#&chainId=56
+URL=https://api.flyingtulip.com/mm/spot/account/summary?address=#CurWallet#&chainId=56
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('sum56')"]
@@ -136,13 +141,14 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('sum56')"]
 
 [MeasureSum143]
 Measure=WebParser
-URL=https://api.flyingtulip.com/mm/spot/account/summary?address=#Wallet#&chainId=143
+URL=https://api.flyingtulip.com/mm/spot/account/summary?address=#CurWallet#&chainId=143
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('sum143')"]
@@ -151,13 +157,14 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('sum143')"]
 
 [MeasureRewards]
 Measure=WebParser
-URL=https://api.flyingtulip.com/account/dashboard?address=#Wallet#&view=rewards
+URL=https://api.flyingtulip.com/account/dashboard?address=#CurWallet#&view=rewards
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('rewards')"]
@@ -166,13 +173,14 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('rewards')"]
 
 [MeasurePoints]
 Measure=WebParser
-URL=https://api.flyingtulip.com/points?walletAddress=#Wallet#
+URL=https://api.flyingtulip.com/points?walletAddress=#CurWallet#
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('points')"]
@@ -181,13 +189,14 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('points')"]
 
 [MeasurePos146]
 Measure=WebParser
-URL=https://api.flyingtulip.com/mm/spot/account/positions?address=#Wallet#&chainId=146
+URL=https://api.flyingtulip.com/mm/spot/account/positions?address=#CurWallet#&chainId=146
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('pos146')"]
@@ -196,13 +205,14 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('pos146')"]
 
 [MeasurePos1]
 Measure=WebParser
-URL=https://api.flyingtulip.com/mm/spot/account/positions?address=#Wallet#&chainId=1
+URL=https://api.flyingtulip.com/mm/spot/account/positions?address=#CurWallet#&chainId=1
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('pos1')"]
@@ -211,13 +221,14 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('pos1')"]
 
 [MeasurePos56]
 Measure=WebParser
-URL=https://api.flyingtulip.com/mm/spot/account/positions?address=#Wallet#&chainId=56
+URL=https://api.flyingtulip.com/mm/spot/account/positions?address=#CurWallet#&chainId=56
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('pos56')"]
@@ -226,18 +237,49 @@ OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('pos56')"]
 
 [MeasurePuts]
 Measure=WebParser
-URL=https://api.flyingtulip.com/tge/ftPUT/user/#Wallet#
+URL=https://api.flyingtulip.com/tge/ftPUT/user/#CurWallet#
 RegExp=(?s)^(.*)$
 StringIndex=1
 UpdateRate=#RefreshSeconds#
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
 Group=Account
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('puts')"]
 OnConnectErrorAction=[!CommandMeasure MeasureScript "OnError('puts')"]
 OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('puts')"]
+
+[MeasureWatch]
+Measure=WebParser
+URL=https://api.flyingtulip.com/mm/lend?user=#WatchWallet#
+RegExp=(?s)^(.*)$
+StringIndex=1
+UpdateRate=3600
+Flags=ForceReload|NoCookies|NoCacheWrite
+Header=Accept: application/json
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
+Disabled=1
+FinishAction=[!CommandMeasure MeasureScript "OnData('watch')"]
+OnConnectErrorAction=[!CommandMeasure MeasureScript "OnError('watch')"]
+OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('watch')"]
+
+[MeasureWatch143]
+Measure=WebParser
+URL=https://api.flyingtulip.com/mm/lend?user=#WatchWallet#&chainId=143
+RegExp=(?s)^(.*)$
+StringIndex=1
+UpdateRate=3600
+Flags=ForceReload|NoCookies|NoCacheWrite
+Header=Accept: application/json
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
+DynamicVariables=1
+Disabled=1
+FinishAction=[!CommandMeasure MeasureScript "OnData('watch143')"]
+OnConnectErrorAction=[!CommandMeasure MeasureScript "OnError('watch143')"]
+OnRegExpErrorAction=[!CommandMeasure MeasureScript "OnError('watch143')"]
 
 [MeasureRank]
 Measure=WebParser
@@ -247,7 +289,7 @@ StringIndex=1
 UpdateRate=3600
 Flags=ForceReload|NoCookies|NoCacheWrite
 Header=Accept: application/json
-UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2
+UserAgent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.1.0
 DynamicVariables=1
 Disabled=1
 FinishAction=[!CommandMeasure MeasureScript "OnData('rank')"]

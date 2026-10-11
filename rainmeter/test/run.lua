@@ -74,7 +74,7 @@ local function api(over, log)
     assert(url:find("^https://api%.flyingtulip%.com/"), url)
     assert(not url:find("#", 1, true), "unresolved variable in " .. url)
     local k = keyFor(url)
-    if log then log[#log + 1] = k end
+    if log then log[#log + 1] = k; log.urls = log.urls or {}; log.urls[#log.urls + 1] = url end
     local v = over and over[k]
     if v == nil then v = MARKET[k] and fixture(MARKET[k]) or ACCOUNT[k] end
     if type(v) == "function" then v = v(url) end
@@ -97,7 +97,7 @@ end
 local function boot(vars, over, opt)
   local d = (opt and opt.dir) or freshDir(vars)
   local log = {}
-  local sk = RM.load(d, { http = api(over, log) })
+  local sk = RM.load(d, { http = api(over, log), settingsPath = opt and opt.settingsPath })
   sk.fetched = log
   return sk:start()
 end
@@ -114,13 +114,14 @@ ok("Rainmeter load order: no script error, the market rows replace 'loading...'"
   has(sk:text("MeterStatus"), "updated"); has(sk:text("MeterPriceVal"), "$0."); has(sk:text("MeterFeesVal"), "$")
   has(sk:text("MeterFeesChartLabel"), "31 days"); has(sk:text("MeterPriceChartLabel"), "30 days")
 end)
-ok("Set wallet: the button opens the box, Enter saves the wallet and refreshes, the account fills in", function()
+ok("Wallets: the cog opens the box, Enter saves the wallet and refreshes, the account fills in", function()
   local sk = boot({}); settle(sk)
-  sk:exec(sk:option("MeterBtnWallet", "LeftMouseUpAction"))
-  assert(sk.input, "input box opened"); has(sk:text("MeterBanner"), "Paste a wallet")
+  sk:exec(sk:option("MeterCog", "LeftMouseUpAction"))
+  assert(sk.input, "input box opened"); has(sk:text("MeterBanner"), "Wallets, comma separated"); eq(sk:inputDefault(), "")
   sk:typeInput("  " .. DEAD .. "  ")
   noErrors(sk)
   eq(sk.refreshed, 1, "skin refreshed")
+  has(readFile(sk.dir .. "/@Resources/Settings.inc"), "\nWallets=" .. DEAD:lower() .. "\n")
   has(readFile(sk.dir .. "/@Resources/Settings.inc"), "\nWallet=" .. DEAD:lower() .. "\n")
   local again = boot(nil, nil, { dir = sk.dir }); settle(again)
   noErrors(again)
@@ -265,7 +266,7 @@ ok("no wallet: market rows, hint, account measures stay disabled and never fetch
   local sk = boot({}); settle(sk); noErrors(sk)
   has(sk:option("MeterFeesChart", "Shape2"), "Rectangle"); has(sk:option("MeterPriceChart", "Shape3"), "Path LinePath")
   has(sk:option("MeterPriceChart", "LinePath"), "LineTo")
-  has(sk:text("MeterAccountHint"), "Add your wallet"); eq(sk:text("MeterHfVal"), nil)
+  has(sk:text("MeterAccountHint"), "click the cog"); eq(sk:text("MeterHfVal"), nil)
   for _, k in ipairs(sk.fetched) do assert(MARKET[k], "fetched " .. k .. " without a wallet") end
 end)
 ok("wallet: every account row rendered from the fetched bodies", function()
@@ -343,7 +344,7 @@ ok("notifications off: visual warning only", function()
 end)
 ok("alert state survives a skin refresh (no second toast inside the cooldown)", function()
   local sk = boot({ Wallet = DEAD }, { lend = lendJson(1.38) }); settle(sk)
-  has(readFile(sk.res .. "State.txt"), "level=1"); os.remove(sk.res .. "Notify.txt")
+  has(readFile(sk.res .. "State.txt"), DEAD:lower() .. "=1,"); os.remove(sk.res .. "Notify.txt")
   clock = clock + 120
   local again = boot(nil, { lend = lendJson(1.37) }, { dir = sk.dir }); settle(again)
   eq(readFile(again.res .. "Notify.txt"), nil)
@@ -364,7 +365,7 @@ ok("connection errors: offline as soon as WebParser reports them", function()
   has(sk:text("MeterStatus"), "offline")
 end)
 ok("invalid wallet is flagged and never queried", function()
-  local sk = boot({ Wallet = "0x123" }); settle(sk); has(sk:text("MeterAccountHint"), "not a valid address")
+  local sk = boot({ Wallet = "0x123" }); settle(sk); has(sk:text("MeterAccountHint"), "Not a valid address: 0x123")
   for _, k in ipairs(sk.fetched) do assert(MARKET[k], "fetched " .. k) end
 end)
 ok("API text cannot inject Rainmeter variables", function()
@@ -385,6 +386,182 @@ ok("a Lua error is logged and shown, not swallowed into 'loading...'", function(
   sk.script.env.FT_TEST.render = function() error("boom") end
   sk.script.env.Render()
   has(sk:text("MeterStatus"), "script error"); has(table.concat(sk.log, "\n"), "boom")
+end)
+
+
+-- ---------------------------------------------------------------- several wallets, tabs, settings
+local W1, W2, W3 = "0x" .. string.rep("1", 40), "0x" .. string.rep("2", 40), "0x" .. string.rep("3", 40)
+local function short(w) return w:sub(1, 6) .. ".." .. w:sub(-4) end
+local function urlsFor(sk, w, from)
+  local out = {}
+  -- a trailing "\0" in w means: the URL ends there (the all-chains /mm/lend read, not its Monad twin)
+  for i = from or 1, #(sk.fetched.urls or {}) do
+    local u = sk.fetched.urls[i] .. "\0"
+    if u:find(w, 1, true) then out[#out + 1] = sk.fetched.urls[i] end
+  end
+  return out
+end
+-- per-wallet lend: hf[w] = health factor on Sonic with $1000 debt, nil = no debt
+local function lendBy(hf) return function(url)
+  for w, h in pairs(hf) do if url:find(w, 1, true) then return lendJson(h) end end
+  return NO_DEBT
+end end
+
+ok("wallet list: commas, spaces, duplicates, 1.0.x Wallet kept, junk reported", function()
+  local t = T(boot({}))
+  local l, bad = t._parse.wallets(" " .. W1 .. ", " .. W2:upper():gsub("^0X", "0x") .. ";" .. W1 .. "\n0x12 ")
+  eq(#l, 2); eq(l[1], W1); eq(l[2], W2); eq(#bad, 1); eq(bad[1], "0x12")
+  local sk = boot({ Wallets = W2, Wallet = W1 }); settle(sk); noErrors(sk)
+  local _, cfg = T(sk)._state(); eq(#cfg.wallets, 2); eq(cfg.wallets[1], W2); eq(cfg.wallets[2], W1)
+end)
+ok("two wallets: header shows which one and i/n, the switch icon shows, the next wallet comes after RotateSeconds", function()
+  local sk = boot({ Wallets = W1 .. ", " .. W2 }); settle(sk); noErrors(sk)
+  has(sk:text("MeterSub"), short(W1) .. "  1/2"); eq(sk:option("MeterSwitch", "Hidden"), "0")
+  eq(sk:text("MeterSwitch"), "<U+21C4>")
+  assert(#urlsFor(sk, W1) >= 12, "shown wallet fetched"); eq(#urlsFor(sk, "/points?walletAddress=" .. W2), 0)
+  local before = #sk.fetched.urls
+  clock = clock + 60; sk:tick(); settle(sk); noErrors(sk)
+  has(sk:text("MeterSub"), short(W2) .. "  2/2")
+  assert(#urlsFor(sk, "/points?walletAddress=" .. W2, before) == 1, "second wallet fetched once it is shown")
+  -- back to the first: its values are shown at once (kept while hidden), then refreshed
+  clock = clock + 60; sk:tick(); has(sk:text("MeterSub"), short(W1) .. "  1/2"); has(sk:text("MeterHfVal"), "1.90")
+end)
+ok("the switch icon and 'Show the next wallet' jump to the next wallet at once", function()
+  local sk = boot({ Wallets = W1 .. "," .. W2 .. "," .. W3 }); settle(sk)
+  sk:exec(sk:option("MeterSwitch", "LeftMouseUpAction")); noErrors(sk); has(sk:text("MeterSub"), short(W2) .. "  2/3")
+  sk:exec(sk:option("Rainmeter", "ContextAction3")); has(sk:text("MeterSub"), short(W3) .. "  3/3")
+  sk:exec(sk:option("MeterSwitch", "LeftMouseUpAction")); has(sk:text("MeterSub"), short(W1) .. "  1/3")
+end)
+ok("one wallet: no switch icon, no rotation, no background check", function()
+  local sk = boot({ Wallets = W1 }); settle(sk)
+  eq(sk:option("MeterSwitch", "Hidden"), "1"); has(sk:text("MeterSub"), short(W1)); assert(not sk:text("MeterSub"):find("1/1"))
+  clock = clock + 600; sk:tick(5); settle(sk); has(sk:text("MeterSub"), short(W1)); eq(#sk:bangsNamed("!SetVariable") > 0 and #urlsFor(sk, "WatchWallet") or 0, 0)
+end)
+ok("background check: a hidden wallet going low is shown at once, named in the toast, and stays while low", function()
+  local hf = { [W2] = 1.9 }
+  local sk = boot({ Wallets = W1 .. ", " .. W2, RotateSeconds = "300" }, { lend = lendBy(hf) }); settle(sk); noErrors(sk)
+  has(sk:text("MeterSub"), short(W1)); assert(#urlsFor(sk, "/mm/lend?user=" .. W2 .. "\0") >= 1, "hidden wallet's health read")
+  -- W2 drops below the warning line; its next background read (debt: every RefreshSeconds) catches it
+  hf[W2] = 1.36; clock = clock + 30; sk:tick(); settle(sk)
+  eq(#urlsFor(sk, "/mm/lend?user=" .. W2 .. "\0"), 1, "not before RefreshSeconds")
+  clock = clock + 31; sk:tick(); settle(sk); noErrors(sk)
+  has(sk:text("MeterSub"), short(W2)); has(sk:text("MeterBanner"), short(W2) .. " HF 1.36")
+  local note = readFile(sk.res .. "Notify.txt"); has(note, "FT account health low"); has(note, short(W2) .. ": Sonic HF 1.36")
+  -- rotation stops on the low wallet; a manual switch peeks away and the next rotation comes back
+  clock = clock + 300; sk:tick(); settle(sk); has(sk:text("MeterSub"), short(W2))
+  sk:exec(sk:option("MeterSwitch", "LeftMouseUpAction")); has(sk:text("MeterSub"), short(W1))
+  clock = clock + 300; sk:tick(); has(sk:text("MeterSub"), short(W2))
+  -- back above the line (plus hysteresis): rotation resumes
+  hf[W2] = 2.5; clock = clock + 61; sk:tick(); settle(sk); clock = clock + 300; sk:tick(); settle(sk)
+  has(sk:text("MeterSub"), short(W1))
+end)
+ok("background check: wallets without debt are read every 10 minutes, one request at a time", function()
+  local sk = boot({ Wallets = W1 .. ", " .. W2 .. ", " .. W3 }, { lend = lendBy({}) }); settle(sk)
+  local n = #urlsFor(sk, "/mm/lend?user=" .. W2 .. "\0") + #urlsFor(sk, "/mm/lend?user=" .. W3 .. "\0")
+  eq(n, 2, "both hidden wallets read once")
+  eq(#urlsFor(sk, "/mm/lend?user=" .. W2 .. "&chainId=143"), 1, "with Monad")
+  for _ = 1, 5 do clock = clock + 50; sk:tick(); settle(sk) end   -- rotation also shows them (and reads their lend)
+  local W = T(sk)._state().w; assert(W[W3].ts.lend, "parked lend value kept")
+end)
+ok("Add a wallet: empty box, appended to the list; Remove the wallet shown; empty list clears", function()
+  local sp = TMP .. "/sp" .. n; os.execute("mkdir -p " .. sp)
+  local sk = boot({ Wallets = W1 }, nil, { settingsPath = sp .. "/" }); settle(sk)
+  sk:exec(sk:option("Rainmeter", "ContextAction2")); eq(sk:inputDefault(), "", "add box starts empty")
+  has(sk:text("MeterBanner"), "to add")
+  sk:typeInput(W2); noErrors(sk)
+  local s = readFile(sk.dir .. "/@Resources/Settings.inc"); has(s, "\nWallets=" .. W1 .. ", " .. W2 .. "\n"); has(s, "\nWallet=" .. W1 .. "\n")
+  eq(readFile(sp .. "/FlyingTulip-wallets.txt"), W1 .. "\n" .. W2 .. "\n")
+  local again = boot(nil, nil, { dir = sk.dir, settingsPath = sp .. "/" }); settle(again)
+  has(again:text("MeterSub"), "1/2")
+  again:exec(again:option("Rainmeter", "ContextAction4")); noErrors(again)
+  has(readFile(sk.dir .. "/@Resources/Settings.inc"), "\nWallets=" .. W2 .. "\n")
+  again:exec('[!CommandMeasure MeasureScript "SetWallets(\'\')"]')
+  has(readFile(sk.dir .. "/@Resources/Settings.inc"), "\nWallets=\n"); eq(readFile(sp .. "/FlyingTulip-wallets.txt"), "\n")
+end)
+ok("wallets survive a skin folder replaced by a fresh install (kept outside the skin folder)", function()
+  local sp = TMP .. "/keep" .. n; os.execute("mkdir -p " .. sp)
+  local sk = boot({ Wallets = W1 .. "," .. W2 }, nil, { settingsPath = sp .. "/" }); settle(sk)
+  eq(readFile(sp .. "/FlyingTulip-wallets.txt"), W1 .. "\n" .. W2 .. "\n", "backup written on load")
+  local fresh = boot({}, nil, { settingsPath = sp .. "/" }); settle(fresh); noErrors(fresh)
+  has(fresh:text("MeterSub"), short(W1) .. "  1/2"); has(fresh:text("MeterHfVal"), "1.90")
+  has(readFile(fresh.dir .. "/@Resources/Settings.inc"), "\nWallets=" .. W1 .. ", " .. W2 .. "\n")
+end)
+ok("an upgrade from 1.0.x keeps the single Wallet and its alert state", function()
+  local d = freshDir({ Wallet = DEAD })
+  writeFile(d .. "/@Resources/State.txt", "wallet=" .. DEAD:lower() .. "\nlevel=1\nlast1=" .. (clock - 60) .. "\nlast2=0\n")
+  local sk = boot(nil, { lend = lendJson(1.38) }, { dir = d }); settle(sk); noErrors(sk)
+  has(sk:text("MeterHfVal"), "1.38"); eq(readFile(sk.res .. "Notify.txt"), nil, "already warned inside the cooldown")
+end)
+ok("tabs: one tab's meters at a time, the choice is kept in Settings.inc, header and footer always shown", function()
+  local sk = boot({ Wallets = W1 }); settle(sk); noErrors(sk)
+  eq(sk:option("MeterHfVal", "Hidden"), "0"); eq(sk:option("MeterPriceVal", "Hidden"), "1"); eq(sk:option("MeterPos1", "Hidden"), "1")
+  eq(sk:option("MeterTabAccount", "FontColor"), "183,177,255,255")
+  sk:exec(sk:option("MeterTabPositions", "LeftMouseUpAction")); noErrors(sk)
+  eq(sk:option("MeterPos1", "Hidden"), "0"); eq(sk:option("MeterHfVal", "Hidden"), "1"); has(sk:text("MeterPosHead"), "1 open")
+  has(readFile(sk.dir .. "/@Resources/Settings.inc"), "\nTab=positions\n"); eq(sk.refreshed, 0)
+  local again = boot(nil, nil, { dir = sk.dir }); settle(again); eq(again:option("MeterPos1", "Hidden"), "0")
+  for _, m in ipairs({ "MeterSub", "MeterCog", "MeterBanner", "MeterTabMarket", "MeterBtnWallet", "MeterStatus" }) do
+    assert(again:option(m, "Hidden") ~= "1", m .. " hidden") end
+  local nw = boot({}); settle(nw); eq(nw:option("MeterPriceVal", "Hidden"), "0", "no wallet: Market first")
+end)
+ok("account tab: per-chain health, FT earned and points broken down on the panel itself", function()
+  local sk = boot({ Wallets = W1 }, { rewards = SMALL_REWARDS, points = POINTS_2CHAINS }); settle(sk); noErrors(sk)
+  has(sk:text("MeterHfC1"), "Sonic     HF 1.90"); has(sk:text("MeterEarnD1"), "sftUSD yield 95.4 FT  (claimed 95.4, pending 0)")
+  has(sk:text("MeterEarnD2"), "Lend rewards 0 FT"); has(sk:text("MeterEarnD3"), "By chain: Sonic 95.4")
+  has(sk:text("MeterPointsD1"), "Ethereum 616K, Sonic 45.8K")
+end)
+ok("switching never shows the previous wallet's /mm/lend answer (fetch in flight at the switch)", function()
+  local sk = boot({ Wallets = W1 .. ", " .. W2 }, { lend = lendBy({ [W1] = 1.9, [W2] = 2.5 }) }); settle(sk); noErrors(sk)
+  local want = { [short(W1)] = "1.90", [short(W2)] = "2.50" }
+  local seen = {}
+  for _ = 1, 250 do
+    clock = clock + 1; sk:tick(); sk:deliver()
+    local sub = sk:text("MeterSub"):sub(1, 12)
+    has(sk:text("MeterHfVal"), want[sub], "HF shown for " .. sub)
+    seen[sub] = true
+  end
+  assert(seen[short(W1)] and seen[short(W2)], "both wallets were shown")
+  noErrors(sk)
+end)
+ok("switching between wallets without debt: no 500 KB refetch, and a late answer for the previous one is dropped", function()
+  local eqOf = { [W1] = 5, [W2] = 77 }
+  local function nodebt(url) for w, e in pairs(eqOf) do if url:find(w, 1, true) then
+    return string.format('{"data":{"chains":[{"chainId":146,"hfLiquidationThreshold":1.25,"userMetrics":{"totalDebtUsd":0,"healthFactor":0,"equityUsd":%d}}]}}', e) end end end
+  local sk = boot({ Wallets = W1 .. ", " .. W2, RefreshSeconds = "60" }, { lend = nodebt }); settle(sk); noErrors(sk)
+  local want = { [short(W1)] = "equity $5.00", [short(W2)] = "equity $77.00" }
+  for _ = 1, 1300 do
+    clock = clock + 1; sk:tick(); sk:deliver()
+    local sub = sk:text("MeterSub"):sub(1, 12)
+    has(sk:text("MeterHfC1"), want[sub], "equity shown for " .. sub)
+  end
+  -- the worst case on purpose: /mm/lend's own timer fires on the very update the skin switches wallets
+  for _ = 1, 4 do
+    clock = clock + 60; sk.measures.measurelend.counter = 0; sk:tick(); sk:deliver()
+    local sub = sk:text("MeterSub"):sub(1, 12)
+    has(sk:text("MeterHfC1"), want[sub], "equity shown for " .. sub .. " right after the switch")
+  end
+  local reads = #urlsFor(sk, "/mm/lend?user=" .. W1 .. "\0") + #urlsFor(sk, "/mm/lend?user=" .. W2 .. "\0")
+  assert(reads <= 14, "about one read per wallet per 10 minutes (plus the 4 forced above), got " .. reads)
+end)
+ok("a hidden wallet whose only debt is on Monad is watched too", function()
+  local sk = boot({ Wallets = W1 .. ", " .. W2, RotateSeconds = "300" }, { lend = lendBy({}), lend143 = function(url)
+    if url:find(W2, 1, true) then return '{"data":{"chains":[{"chainId":143,"hfLiquidationThreshold":1.25,"userMetrics":{"totalDebtUsd":500,"healthFactor":1.35,"equityUsd":50}}]}}' end
+    return '{"data":{"chains":[]}}' end })
+  settle(sk); noErrors(sk)
+  has(sk:text("MeterSub"), short(W2)); has(sk:text("MeterHfVal"), "1.35  Monad")
+  has(readFile(sk.res .. "Notify.txt"), short(W2) .. ": Monad HF 1.35")
+end)
+ok("the panel fits: every meter of every tab sits above the footer", function()
+  local sk = boot({ Wallets = W1 })
+  local footer = tonumber(sk:option("MeterBtnRefresh", "Y"))
+  for _, sec in ipairs(sk.order) do
+    local y = tonumber(sec._opts.y or "")
+    if sec._name:match("^Meter") and not sec._name:match("^MeterBtn") and sec._name ~= "MeterDisclaimer" and y then
+      local h = tonumber(sec._opts.h or "") or 16
+      assert(y + h <= footer, sec._name .. " overlaps the footer")
+    end
+  end
+  has(sk:option("MeterBackground", "Shape"), "340,424")
 end)
 
 os.execute("rm -rf " .. TMP)

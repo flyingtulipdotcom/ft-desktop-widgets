@@ -35,9 +35,12 @@ const bangTargets = new Set([...JSON.stringify(main).matchAll(/CommandMeasure (M
 for (const m of [...bangTargets, ...[...lua.matchAll(/"(Measure[A-Za-z0-9]+)"/g)].map(x => x[1])])
   ok(m in main.sections || m in data.sections, "bang targets missing measure " + m)
 
-// every text/image/shape meter except the background, buttons and the wallet input links to a public page
+// every text/image/shape meter except the background, buttons, controls (tabs, cog, wallet switch) and the input
+// links to a public page; the controls call the script
+const CONTROLS = new Set(["MeterCog", "MeterSwitch", "MeterTabMarket", "MeterTabAccount", "MeterTabPositions"])
+for (const n of CONTROLS) ok(/^\[!CommandMeasure MeasureScript "\w+\('?\w*'?\)"\]$/.test((main.sections[n] || {}).LeftMouseUpAction || ""), n + " must call the script")
 for (const [n, s] of Object.entries(main.sections)) {
-  if (!n.startsWith("Meter") || n === "MeterBackground" || n.startsWith("MeterBtn") || n === "MeterInput") continue
+  if (!n.startsWith("Meter") || n === "MeterBackground" || n.startsWith("MeterBtn") || n === "MeterInput" || CONTROLS.has(n)) continue
   ok(/^\["https:\/\/flyingtulip\.com\/[^"]*"\]$/.test(s.LeftMouseUpAction || ""), n + " has no flyingtulip.com link")
 }
 
@@ -72,7 +75,9 @@ for (const [n, s] of Object.entries(data.sections)) {
   ok(luaMeasures[k] === n, "Lua MEASURES[" + k + "] is " + luaMeasures[k] + ", Data.inc has " + n)
   for (const a of ["OnConnectErrorAction", "OnRegExpErrorAction"])
     ok((s[a] || "") === "[!CommandMeasure MeasureScript \"OnError('" + k + "')\"]", n + " " + a + " must call OnError('" + k + "')")
-  if (s.URL.includes("#Wallet#")) ok(s.Group === "Account" && s.Disabled === "1", n + " uses the wallet so it must start disabled in group Account")
+  ok(!s.URL.includes("#Wallet#") && !s.URL.includes("#Wallets#"), n + " must read the wallet shown (#CurWallet#), not the settings")
+  if (s.URL.includes("#CurWallet#")) ok(s.Group === "Account" && s.Disabled === "1" && s.DynamicVariables === "1", n + " uses the wallet shown so it must start disabled in group Account with DynamicVariables=1")
+  else if (s.URL.includes("#WatchWallet#")) ok(!s.Group && s.Disabled === "1" && s.DynamicVariables === "1" && Number(s.UpdateRate) >= 600, n + " (background check) must start disabled, outside the groups, with DynamicVariables=1 and a long UpdateRate")
   else if (n !== "MeasureRank") ok(s.Group === "Data", n + " should be in group Data")
   if (s.URL.includes("#RankPage#")) ok(s.DynamicVariables === "1" && Number(s.UpdateRate) >= 600, n + " needs DynamicVariables=1 and a long UpdateRate (pages are forced from Lua)")
 }
@@ -81,11 +86,14 @@ const input = main.sections.MeasureInput
 ok(input && input.Measure === "Plugin" && input.Plugin === "InputText", "InputText measure missing")
 if (input) {
   for (const k of Object.keys(input)) ok(known(INPUTTEXT, k), "MeasureInput: " + k + " is not an InputText option")
-  ok(/^\[!CommandMeasure MeasureScript "SetWallet\('\$UserInput\$'\)"\]$/.test(input.Command1 || ""), "InputText Command1 must call SetWallet('$UserInput$')")
+  ok(/^\[!CommandMeasure MeasureScript "SetWallets\('\$UserInput\$'\)"\]$/.test(input.Command1 || ""), "InputText Command1 must call SetWallets('$UserInput$')")
+  ok(/^\[!CommandMeasure MeasureScript "AddWallet\('\$UserInput\$'\)"\] DefaultValue=""$/.test(input.Command2 || ""), "InputText Command2 must call AddWallet('$UserInput$') with an empty box")
   ok(/Render\(\)/.test(input.OnDismissAction || ""), "InputText OnDismissAction must call Render()")
 }
-for (const where of [main.sections.Rainmeter.ContextAction, main.sections.MeterBtnWallet.LeftMouseUpAction])
-  ok(/\[!CommandMeasure MeasureInput "ExecuteBatch 1"\]$/.test(where || ""), "Set wallet must end with ExecuteBatch 1: " + where)
+for (const where of [main.sections.Rainmeter.ContextAction, main.sections.MeterBtnWallet.LeftMouseUpAction, main.sections.MeterCog.LeftMouseUpAction])
+  ok(where === '[!CommandMeasure MeasureScript "OpenWallets(1)"]', "the cog, the Wallets button and the first menu entry open the wallet list: " + where)
+ok(/"ExecuteBatch " \.\./.test(lua), "OpenWallets must open the box with ExecuteBatch")
+ok(/^Wallets=$/m.test(fs.readFileSync(path.join(root, "@Resources", "Settings.inc"), "utf8")), "Settings.inc must ship with an empty Wallets=")
 ok(/OnLoaded\(\)/.test(main.sections.Rainmeter.OnRefreshAction), "OnRefreshAction must call OnLoaded")
 ok(/Settings\.inc/.test(JSON.stringify(main.sections.Variables)), "Settings.inc not included")
 

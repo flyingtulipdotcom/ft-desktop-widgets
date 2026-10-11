@@ -53,6 +53,7 @@ function R.load(skinDir, opt)
   if v then for k, x in pairs(v._opts) do sk.vars[k] = x end end
   for k, x in pairs(opt.vars or {}) do sk.vars[k:lower()] = x end
   sk.vars["@"] = sk.res
+  if opt.settingsPath then sk.vars["settingspath"] = opt.settingsPath end
   setmetatable(sk, { __index = R })
   sk:init()
   return sk
@@ -237,7 +238,8 @@ function R:bang(name, a)
     if m.kind == "script" then self:runLua(a[2])
     elseif m.kind == "webparser" and a[2]:lower() == "update" then m.counter = 0; m.inflight = nil
     elseif m.kind == "plugin" and (self:option(m.name, "Plugin") or ""):lower() == "inputtext" then
-      if a[2]:lower():match("^executebatch") then self.input = { measure = m } end
+      local b = a[2]:lower():match("^executebatch%s+(%d+)")
+      if b then self.input = { measure = m, batch = tonumber(b) } end
     end
   elseif n == "!writekeyvalue" then
     local file = (a[4] or ""):gsub("\\", "/")
@@ -316,16 +318,24 @@ function R:start()
   return self
 end
 
--- InputText: the user types into the open box and presses Enter, or dismisses it
-function R:typeInput(text)
+-- InputText: "ExecuteBatch N" opens the box for CommandN (options written after that command's action, such as
+-- DefaultValue="", override the measure's own for this batch); the user types and presses Enter, or dismisses it.
+function R:inputDefault()
   assert(self.input, "no input box is open")
   local m = self.input.measure
+  local c = self:option(m.name, "Command" .. self.input.batch) or ""
+  local over = c:match('%]%s+DefaultValue="([^"]*)"%s*$')
+  if over then return over end
+  return self:replaceVars(self:option(m.name, "DefaultValue") or "")
+end
+function R:typeInput(text)
+  assert(self.input, "no input box is open")
+  local m, batch = self.input.measure, self.input.batch
   self.input = nil
-  for i = 1, 20 do
-    local c = self:option(m.name, "Command" .. i)
-    if not c then break end
-    self:exec(self:replaceVars(c):gsub("%$[Uu][Ss][Ee][Rr][Ii][Nn][Pp][Uu][Tt]%$", function() return text end))
-  end
+  local c = self:option(m.name, "Command" .. batch)
+  assert(c, "no Command" .. batch)
+  c = c:gsub("(%])%s+%a+=.*$", "%1")                             -- per-command option overrides are not actions
+  self:exec((self:replaceVars(c):gsub("%$[Uu][Ss][Ee][Rr][Ii][Nn][Pp][Uu][Tt]%$", function() return text end)))
 end
 function R:dismissInput()
   assert(self.input, "no input box is open")

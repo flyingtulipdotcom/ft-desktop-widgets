@@ -20,4 +20,12 @@ test -s "$HOME/Library/Caches/com.flyingtulip.menubar/state.json" && echo "state
 # Set wallet flow
 SHIM_DIALOG="  0x000000000000000000000000000000000000dEaD " "$T/flyingtulip.1m.sh" wallet
 test "$(cat "$HOME/Library/Application Support/FlyingTulip/menubar-wallet")" = "0x000000000000000000000000000000000000dead" && echo "set-wallet flow ok"
-"$T/flyingtulip.1m.sh" | grep -q "ACCOUNT  0x0000" && echo "saved wallet picked up"
+"$T/flyingtulip.1m.sh" | grep -q "Account    0x0000" && echo "saved wallet picked up"
+# several wallets: add one (the box starts empty), the next run on the menu's "Next wallet" shows it, remove it
+W2=0x2222222222222222222222222222222222222222
+SHIM_DIALOG=" $W2 " "$T/flyingtulip.1m.sh" add
+test "$(cat "$HOME/Library/Application Support/FlyingTulip/menubar-wallet")" = "0x000000000000000000000000000000000000dead
+$W2" && echo "add-wallet flow ok"
+"$T/flyingtulip.1m.sh" next | head -1 | grep -q "0x2222…2222 ⇄" && echo "next wallet shown with the switch sign"
+"$T/flyingtulip.1m.sh" remove "$W2" >/dev/null
+test "$(cat "$HOME/Library/Application Support/FlyingTulip/menubar-wallet")" = "0x000000000000000000000000000000000000dead" && echo "remove-wallet flow ok"

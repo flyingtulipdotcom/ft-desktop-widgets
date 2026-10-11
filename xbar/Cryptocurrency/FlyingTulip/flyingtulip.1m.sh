@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 
-# Flying Tulip in the macOS menu bar: FT market price, 24h application fees and, for a wallet you set,
+# Flying Tulip in the macOS menu bar: FT market price, 24h application fees and, for the wallets you set,
 # health factor with liquidation alerts, PnL, FT earned, points, ftPUT gain and positions.
 # Public API only (https://api.flyingtulip.com), no keys. Works in xbar and SwiftBar.
 #
 # Metadata (xbar):
 #  <xbar.title>Flying Tulip</xbar.title>
-#  <xbar.version>v1.0.2</xbar.version>
+#  <xbar.version>v1.1.0</xbar.version>
 #  <xbar.author>Flying Tulip</xbar.author>
 #  <xbar.author.github>flyingtulipdotcom</xbar.author.github>
-#  <xbar.desc>FT market price, 24h application fees and, for an optional wallet, health factor with liquidation alerts, PnL, FT earned, points, ftPUT gain and positions. Public API only.</xbar.desc>
+#  <xbar.desc>FT market price, 24h application fees and, for optional wallets (shown in turn), health factor with liquidation alerts, PnL, FT earned, points, ftPUT gain and positions. Public API only.</xbar.desc>
 #  <xbar.dependencies>bash,curl,osascript</xbar.dependencies>
 #  <xbar.abouturl>https://github.com/flyingtulipdotcom/ft-desktop-widgets</xbar.abouturl>
 #
 # Settings (shown in the plugin settings window of xbar and SwiftBar):
-#  <xbar.var>string(VAR_WALLET=""): Public wallet address to track (0x...). Leave empty for market data only.</xbar.var>
+#  <xbar.var>string(VAR_WALLET=""): Public wallet addresses to track (0x...), comma separated. Leave empty to set them from the menu.</xbar.var>
 #  <xbar.var>string(VAR_HF_WARN="1.40"): Warning notification at or below this health factor.</xbar.var>
 #  <xbar.var>string(VAR_HF_CRITICAL="1.30"): Critical notification at or below this health factor (liquidation starts below 1.25).</xbar.var>
 #  <xbar.var>boolean(VAR_NOTIFICATIONS=true): Show a macOS notification when health factor crosses a threshold.</xbar.var>
@@ -416,13 +416,14 @@ function decideNotify(state, hfEntry, cfg, nowMs) {
   return { state: st, notify: notify };
 }
 
+// n.wallet (short address), when set, names the wallet so a toast says which one of several it is about.
 function notifyText(n) {
-  var hf = n.hf.toFixed(2);
+  var hf = n.hf.toFixed(2), who = n.wallet ? n.wallet + ": " : "";
   if (n.level === 2)
     return { urgency: "critical", title: "FT account near liquidation",
-      body: n.chain + " HF " + hf + " (liquidation below " + n.liqHf.toFixed(2) + "). Add collateral or repay now." };
+      body: who + n.chain + " HF " + hf + " (liquidation below " + n.liqHf.toFixed(2) + "). Add collateral or repay now." };
   return { urgency: "normal", title: "FT account health low",
-    body: n.chain + " HF " + hf + " (liquidation below " + n.liqHf.toFixed(2) + ")." };
+    body: who + n.chain + " HF " + hf + " (liquidation below " + n.liqHf.toFixed(2) + ")." };
 }
 
 function parseThreshold(v, fallback) {
@@ -595,13 +596,7 @@ function sourceSpecs(cfg, w) {
   ];
   if (!w) return specs;
   var a = enc(w), summaryIds = [146, 1, 56, 143], posIds = [146, 1, 56];
-  specs.push({ key: "lend", ttl: 0,
-    urls: [API + "/mm/lend?user=" + a, API + "/mm/lend?user=" + a + "&chainId=143"],
-    parse: function (b) {
-      if (!b[0]) return FAIL;
-      var list = mergeChains([parseLend(b[0]), parseLend(b[1])]);
-      return list;
-    } });
+  specs.push(lendSpec(w, 0));
   specs.push({ key: "pnl", ttl: 0,
     urls: summaryIds.map(function (id) { return API + "/mm/spot/account/summary?address=" + a + "&chainId=" + id; }),
     parse: function (b) {
@@ -613,11 +608,11 @@ function sourceSpecs(cfg, w) {
     parse: function (b) { var r = parseRewards(b[0]); return r || FAIL; } });
   specs.push({ key: "points", ttl: 0, urls: [API + "/points?walletAddress=" + a],
     parse: function (b) { var p = parsePoints(b[0]); return p || FAIL; } });
-  specs.push({ key: "positions", ttl: 0,
+  specs.push({ key: "positions", ttl: 0, nullOk: true,
     urls: posIds.map(function (id) { return API + "/mm/spot/account/positions?address=" + a + "&chainId=" + id; }),
     parse: function (b) {
       var all = [], ok = 0;
-      for (var i = 0; i < b.length; i++) if (b[i]) { all = all.concat(parsePositions(b[i])); ok++; }
+      for (var i = 0; i < b.length; i++) if (b[i]) { all = all.concat(b[i] === JSON_NULL ? [] : parsePositions(b[i])); ok++; }
       return ok ? sortPositions(all) : FAIL;
     } });
   specs.push({ key: "puts", ttl: 0, urls: [API + "/tge/ftPUT/user/" + a],
@@ -625,18 +620,34 @@ function sourceSpecs(cfg, w) {
   return specs;
 }
 
+// /mm/lend for one wallet (all chains, plus Monad which is asked for separately).
+function lendSpec(w, ttl) {
+  var a = encodeURIComponent(w);
+  return { key: "lend", ttl: ttl,
+    urls: [API + "/mm/lend?user=" + a, API + "/mm/lend?user=" + a + "&chainId=143"],
+    parse: function (b) {
+      if (!b[0]) return FAIL;
+      return mergeChains([parseLend(b[0]), parseLend(b[1])]);
+    } };
+}
+
+// The JSON literal null is an answer, not a failure: the positions endpoint sends it for a wallet with none.
+var JSON_NULL = {};
 function parseJson(text) {
   if (text === null || text === undefined) return null;
   var t = String(text).replace(/^\s+|\s+$/g, "");
   if (!t) return null;
+  if (t === "null") return JSON_NULL;
   try { return JSON.parse(t); } catch (e) { return null; }
 }
 
-// Returns {data: {key: value|undefined}, age: {key: seconds since the shown value was fetched}, fetched: {key: bool}}
+// Returns {data: {key: value|undefined}, age: {key: seconds since the shown value was fetched}, fetched: {id: bool}}.
+// A spec with a store keeps its value there instead of in cache (another wallet's), and is left out of data/age;
+// its id is key@wallet.
 function loadSources(io, specs, cache, nowMs) {
   var need = [], urls = [], i, j;
   for (i = 0; i < specs.length; i++) {
-    var c = cache[specs[i].key];
+    var c = (specs[i].store || cache)[specs[i].key];
     if (specs[i].ttl > 0 && c && nowMs - c.t < specs[i].ttl * 1000) continue;
     need.push(specs[i]);
     for (j = 0; j < specs[i].urls.length; j++) urls.push(specs[i].urls[j]);
@@ -645,13 +656,17 @@ function loadSources(io, specs, cache, nowMs) {
   var fetched = {};
   for (i = 0; i < need.length; i++) {
     var bs = [];
-    for (j = 0; j < need[i].urls.length; j++) bs.push(parseJson(bodies[pos++]));
+    for (j = 0; j < need[i].urls.length; j++) {
+      var pj = parseJson(bodies[pos++]);
+      bs.push(pj === JSON_NULL && !need[i].nullOk ? null : pj);   // only positions answer "none" with null
+    }
     var v = FAIL;
     try { v = need[i].parse(bs); } catch (e) { v = FAIL; }
-    if (v !== FAIL) { cache[need[i].key] = { t: nowMs, v: v }; fetched[need[i].key] = true; }
+    if (v !== FAIL) { (need[i].store || cache)[need[i].key] = { t: nowMs, v: v }; fetched[need[i].id || need[i].key] = true; }
   }
   var data = {}, age = {};
   for (i = 0; i < specs.length; i++) {
+    if (specs[i].store) continue;
     var e = cache[specs[i].key];
     if (e) { data[specs[i].key] = e.v; age[specs[i].key] = Math.round((nowMs - e.t) / 1000); }
   }
@@ -663,7 +678,7 @@ function findRank(io, wallet, myPoints) {
   var lo = 1, hi = 14, steps = 0, page = Math.floor((lo + hi) / 2);
   while (steps++ < 8) {
     var b = parseJson(io.fetchAll([API + "/points/leaderboard?page=" + page + "&limit=500"])[0]);
-    if (!b) return FAIL;
+    if (!b || b === JSON_NULL) return FAIL;
     var r = rankInPage(b, wallet, myPoints);
     if (r.found) return { rank: r.rank, total: r.total };
     if (r.total > 0) hi = Math.min(hi, Math.max(1, Math.ceil(r.total / 500)));
@@ -681,13 +696,30 @@ function findRank(io, wallet, myPoints) {
 
 function stateReplacer(k, v) { return (typeof v === "number" && !isFinite(v)) ? "__nan__" : v; }
 function stateReviver(k, v) { return v === "__nan__" ? NaN : v; }
+// v2: {v, cache (market sources), wallets: {addr: {cache, alert}}, cur (wallet shown), shownAt}.
+// A 1.0.x state (v1: one wallet's cache and alert mixed with the market sources) is carried over.
+var MARKET_KEYS = { price: 1, fees: 1, feesSeries: 1, klines: 1 };
 function loadState(io, path) {
   var txt = io.readFile(path), s = null;
   txt = txt ? txt.replace(/\r/g, "\n") : txt;
   try { s = txt ? JSON.parse(txt, stateReviver) : null; } catch (e) { s = null; }
-  if (!s || s.v !== 1 || typeof s.cache !== "object" || !s.cache) s = { v: 1, wallet: "", cache: {}, alert: { level: 0, last: {} } };
-  if (!s.alert) s.alert = { level: 0, last: {} };
+  if (s && s.v === 1 && s.cache && typeof s.cache === "object") {
+    var mc = {}, wc = {};
+    for (var k in s.cache) (MARKET_KEYS[k] ? mc : wc)[k] = s.cache[k];
+    var ws = {};
+    if (s.wallet) ws[s.wallet] = { cache: wc, alert: s.alert || { level: 0, last: {} } };
+    s = { v: 2, cache: mc, wallets: ws, cur: s.wallet || "", shownAt: 0 };
+  }
+  if (!s || s.v !== 2 || typeof s.cache !== "object" || !s.cache || typeof s.wallets !== "object" || !s.wallets)
+    s = { v: 2, cache: {}, wallets: {}, cur: "", shownAt: 0 };
   return s;
+}
+function walletSlot(st, w) {
+  var x = st.wallets[w];
+  if (!x || typeof x !== "object") x = st.wallets[w] = { cache: {}, alert: { level: 0, last: {} } };
+  if (!x.cache) x.cache = {};
+  if (!x.alert) x.alert = { level: 0, last: {} };
+  return x;
 }
 function saveState(io, path, s) { io.writeFile(path, JSON.stringify(s, stateReplacer)); }
 
@@ -723,17 +755,19 @@ function deltaColor(v) { return !isFinite(v) || Math.abs(v) < 0.005 ? undefined 
 function ageText(sec) { return sec < 90 ? sec + "s" : (sec < 5400 ? Math.round(sec / 60) + "m" : Math.round(sec / 3600) + "h"); }
 
 function buildView(d, cfg, nowMs) {
-  var v = { hfLevel: 0, lowest: null, hasWallet: !!cfg.wallet, walletBad: !!cfg.walletRaw && !cfg.wallet };
+  var v = { hfLevel: 0, lowest: null, hasWallet: !!cfg.wallet, walletBad: !cfg.wallet && cfg.badWallets && cfg.badWallets.length > 0 };
   if (d.lend) v.lowest = lowestHf(d.lend);
   if (v.lowest) v.hfLevel = levelFor(v.lowest.hf, cfg.alert, 0);
   return v;
 }
 
+// Title: price, fees, the shown wallet's HF and, with several wallets, which one is shown plus the switch sign.
 function titleLine(d, age, cfg, v) {
   var parts = [], p = d.price;
   parts.push(p ? fmtPrice(p.price) : "FT —");
   if (d.fees) parts.push("fees " + fmtUsd(d.fees.period24h));
   if (cfg.wallet && d.lend) parts.push("HF " + (v.lowest ? fmtHf(v.lowest.hf) : "∞"));
+  if (cfg.wallet && cfg.wallets.length > 1) parts.push(shortAddr(cfg.wallet) + " ⇄");
   var stale = (age.price !== undefined && age.price > STALE_AFTER) || (age.fees !== undefined && age.fees > STALE_AFTER) ||
     (cfg.wallet && age.lend !== undefined && age.lend > STALE_AFTER);
   var txt = parts.join("  ") + (stale ? " ⚠" : "");
@@ -741,8 +775,22 @@ function titleLine(d, age, cfg, v) {
   return line(txt, { image: LOGO_B64, color: color, size: 13 });
 }
 
+// Lines of a section moved one level down, under its header line: a submenu.
+function submenu(L, header, lines) {
+  L.push(header);
+  for (var i = 0; i < lines.length; i++) L.push(lines[i] === "---" ? "-----" : "--" + lines[i]);
+}
+
+// The dropdown has three submenus (Market, Account, Positions) instead of one long list, plus the wallet switch.
 function render(d, age, cfg, nowMs, selfPath) {
-  var v = buildView(d, cfg, nowMs), L = [];
+  var v = buildView(d, cfg, nowMs), L = [], n = cfg.wallets ? cfg.wallets.length : 0;
+  var act = function (p1, p2, extra) {
+    var o = { shell: selfPath, param1: p1 };
+    if (p2) o.param2 = p2;
+    o.terminal = false; o.refresh = true;
+    for (var k in (extra || {})) o[k] = extra[k];
+    return o;
+  };
   if (!d.price && !d.fees && !d.lend) {
     L.push(line("FT offline", { image: LOGO_B64, color: C_FAINT }));
   } else L.push(titleLine(d, age, cfg, v));
@@ -750,122 +798,145 @@ function render(d, age, cfg, nowMs, selfPath) {
   L.push(line("Flying Tulip", { color: C_TULIP, size: 14, href: SITE }));
   L.push(line("Open flyingtulip.com", { href: SITE }));
   L.push(line("Refresh now", { refresh: true }));
+  if (n > 1 && selfPath) {
+    L.push("---");
+    L.push(line("Showing " + shortAddr(cfg.wallet) + "  (" + (cfg.wallets.indexOf(cfg.wallet) + 1) + " of " + n + ")", { size: 11, color: C_FAINT, href: PAGES.portfolio }));
+    L.push(line("Next wallet ⇄", act("next")));
+  }
   L.push("---");
 
-  // market
-  var mkt = marketUrl("FT-ftUSD", cfg.priceChain);
-  L.push(head("MARKET", mkt));
-  var mk0 = L.length;
+  // ---- Market
+  var mkt = marketUrl("FT-ftUSD", cfg.priceChain), M = [], mk0 = 0, ch = d.price ? d.price.changePct24h : NaN;
   if (d.price) {
-    var ch = d.price.changePct24h;
-    L.push(row("FT price", fmtPrice(d.price.price) + (isFinite(ch) ? "  " + fmtPct(ch) + " 24h" : ""), { color: deltaColor(ch) }));
-    L.push(line("--FT-ftUSD market price (the traded mark, not the NAV used for accounting)", { size: 11 }));
-    if (d.price.sampledAt) L.push(line("--sampled " + d.price.sampledAt, { size: 11, color: C_FAINT }));
-  } else L.push(row("FT price", "— unavailable"));
-  linkFrom(L, mk0, mkt);
-  mk0 = L.length;
+    M.push(row("FT price", fmtPrice(d.price.price) + (isFinite(ch) ? "  " + fmtPct(ch) + " 24h" : ""), { color: deltaColor(ch) }));
+    M.push(line("FT-ftUSD market price (the traded mark, not the NAV used for accounting)", { size: 11 }));
+    if (d.price.sampledAt) M.push(line("sampled " + d.price.sampledAt, { size: 11, color: C_FAINT }));
+  } else M.push(row("FT price", "— unavailable"));
+  linkFrom(M, mk0, mkt);
+  M.push("---");
+  mk0 = M.length;
   if (d.fees) {
     var dod = feesDayOverDay(d.feesSeries, nowMs);
-    L.push(row("Fees 24h", fmtUsd(d.fees.period24h) + (isFinite(dod) ? "  " + fmtPct(dod) + " d/d" : ""), { color: deltaColor(dod) }));
-    L.push(line("--Flying Tulip application fees, last 24 hours", { size: 11 }));
-    if (isFinite(d.fees.lifetime)) L.push(line("--Lifetime " + fmtUsd(d.fees.lifetime), { size: 11 }));
+    M.push(row("Fees 24h", fmtUsd(d.fees.period24h) + (isFinite(dod) ? "  " + fmtPct(dod) + " d/d" : ""), { color: deltaColor(dod) }));
+    M.push(line("Flying Tulip application fees, last 24 hours" + (isFinite(d.fees.lifetime) ? ", lifetime " + fmtUsd(d.fees.lifetime) : ""), { size: 11 }));
     for (var i = 0; i < d.fees.products.length; i++)
-      L.push(line("--" + d.fees.products[i].name + "  " + fmtUsd(d.fees.products[i].usd), { size: 11, font: "Menlo" }));
-  } else L.push(row("Fees 24h", "— unavailable"));
-  linkFrom(L, mk0, PAGES.fees);
-  mk0 = L.length;
+      M.push(line("  " + d.fees.products[i].name + "  " + fmtUsd(d.fees.products[i].usd), { size: 11, font: "Menlo" }));
+  } else M.push(row("Fees 24h", "— unavailable"));
   if (d.feesSeries && d.feesSeries.length > 1) {
     var fv = d.feesSeries.map(function (x) { return x.total; });
-    L.push(line("Fees, last " + fv.length + " days (today so far in light purple)", { size: 10, color: C_FAINT }));
-    L.push(line(" ", { image: barChartPng(fv), href: PAGES.fees }));
+    M.push(line("Fees, last " + fv.length + " days (today so far in light purple)", { size: 10, color: C_FAINT }));
+    M.push(line(" ", { image: barChartPng(fv), href: PAGES.fees }));
   }
-  linkFrom(L, mk0, PAGES.fees);
-  mk0 = L.length;
+  linkFrom(M, mk0, PAGES.fees);
+  mk0 = M.length;
   if (d.klines && d.klines.length > 1) {
     var kv = d.klines.map(function (x) { return x.close; });
-    L.push(line("FT market price, last " + kv.length + " days", { size: 10, color: C_FAINT }));
-    L.push(line(" ", { image: lineChartPng(kv), href: mkt }));
+    M.push(line("FT market price, last " + kv.length + " days", { size: 10, color: C_FAINT }));
+    M.push(line(" ", { image: lineChartPng(kv), href: mkt }));
   }
-  linkFrom(L, mk0, mkt);
-  L.push("---");
+  linkFrom(M, mk0, mkt);
+  submenu(L, line("Market     " + (d.price ? fmtPrice(d.price.price) + (isFinite(ch) ? " " + fmtPct(ch) : "") : "—") +
+    (d.fees ? "  ·  fees " + fmtUsd(d.fees.period24h) : ""), mono({ href: mkt })), M);
 
-  // account
+  // ---- Account (the wallet shown)
+  var A = [], ac0 = 0, sum = [];
   if (v.walletBad) {
-    L.push(head("ACCOUNT"));
-    L.push(line("Wallet is not a valid address (0x + 40 hex characters)", { color: C_RED, href: SITE }));
+    A.push(line("Not a valid address: " + String(cfg.badWallets[0]).slice(0, 24) + " (0x + 40 hex characters)", { color: C_RED, href: SITE }));
   } else if (v.hasWallet) {
-    L.push(head("ACCOUNT  " + shortAddr(cfg.wallet), PAGES.portfolio));
-    var ac0 = L.length;
     if (d.lend) {
       if (v.lowest) {
         var lvc = v.hfLevel === 2 ? C_RED : (v.hfLevel === 1 ? C_AMBER : C_GREEN);
-        L.push(row("Health", fmtHf(v.lowest.hf) + "  " + v.lowest.name + " (lowest)", { color: lvc }));
-      } else L.push(row("Health", "∞  no debt", { color: C_GREEN }));
-      L.push(line("--Positions can be liquidated below HF " + (v.lowest ? v.lowest.liqHf : DEFAULT_LIQ_HF).toFixed(2), { size: 11 }));
-      L.push(line("--Alerts at " + cfg.alert.warn.toFixed(2) + " (warning) and " + cfg.alert.critical.toFixed(2) + " (critical)", { size: 11 }));
+        A.push(row("Health", fmtHf(v.lowest.hf) + "  " + v.lowest.name + " (lowest)", { color: lvc }));
+      } else A.push(row("Health", "∞  no debt", { color: C_GREEN }));
       for (var c = 0; c < d.lend.length; c++) {
         var ce = d.lend[c];
         if (ce.hf === null && !(ce.debtUsd > 0) && !(ce.equityUsd > 0)) continue;
-        L.push(line("--" + padR(ce.name, 9) + (ce.hf === null ? "no debt" : "HF " + fmtHf(ce.hf)) + "  debt " + fmtUsd(ce.debtUsd) +
+        A.push(line("  " + padR(ce.name, 9) + (ce.hf === null ? "no debt" : "HF " + fmtHf(ce.hf) + "  debt " + fmtUsd(ce.debtUsd)) +
           (isFinite(ce.equityUsd) ? "  equity " + fmtUsd(ce.equityUsd) : ""), { size: 11, font: "Menlo" }));
       }
-    } else L.push(row("Health", "— unavailable"));
-    linkFrom(L, ac0, PAGES.health);
-    ac0 = L.length;
-    if (d.pnl) L.push(row("PnL", fmtSignedUsd(d.pnl.totalUsd) + "  unrealized", { color: deltaColor(d.pnl.totalUsd) }));
-    else L.push(row("PnL", "— unavailable"));
-    linkFrom(L, ac0, PAGES.portfolio);
-    ac0 = L.length;
+      A.push(line("Liquidation below HF " + (v.lowest ? v.lowest.liqHf : DEFAULT_LIQ_HF).toFixed(2) + ". Alerts at " +
+        cfg.alert.warn.toFixed(2) + " (warning) and " + cfg.alert.critical.toFixed(2) + " (critical)", { size: 11, color: C_FAINT }));
+      sum.push("HF " + (v.lowest ? fmtHf(v.lowest.hf) : "∞"));
+    } else A.push(row("Health", "— unavailable"));
+    linkFrom(A, ac0, PAGES.health);
+    A.push("---");
+    ac0 = A.length;
+    if (d.pnl) A.push(row("PnL", fmtSignedUsd(d.pnl.totalUsd) + "  unrealized", { color: deltaColor(d.pnl.totalUsd) }));
+    else A.push(row("PnL", "— unavailable"));
+    linkFrom(A, ac0, PAGES.portfolio);
+    ac0 = A.length;
     if (d.rewards) {
       var rw = d.rewards;
-      L.push(row("FT earned", fmtFt(rw.totalFt) + " FT  all time"));
+      A.push(row("FT earned", fmtFt(rw.totalFt) + " FT  all time"));
       if (isFinite(rw.sftFt)) {
-        L.push(line("--sftUSD yield     " + fmtFt(rw.sftFt) + " FT  (claimed " + fmtFt(rw.sftClaimed) + ", pending " + fmtFt(rw.sftPending) + ")", { size: 11, font: "Menlo" }));
-        L.push(line("--Lend FT rewards  " + fmtFt(rw.lendFt) + " FT  (received " + fmtFt(rw.lendReceived) + ", pending " + fmtFt(rw.lendPending) + ")", { size: 11, font: "Menlo" }));
+        A.push(line("  sftUSD yield     " + fmtFt(rw.sftFt) + " FT  (claimed " + fmtFt(rw.sftClaimed) + ", pending " + fmtFt(rw.sftPending) + ")", { size: 11, font: "Menlo" }));
+        A.push(line("  Lend FT rewards  " + fmtFt(rw.lendFt) + " FT  (received " + fmtFt(rw.lendReceived) + ", pending " + fmtFt(rw.lendPending) + ")", { size: 11, font: "Menlo" }));
         var bc = earnedByChain(rw);
-        if (bc) L.push(line("--By chain: " + bc, { size: 11 }));
+        if (bc) A.push(line("  By chain: " + bc, { size: 11 }));
       }
-      if (rw.claimableFt > 0) L.push(line("--" + fmtFt(rw.claimableFt) + " FT claimable (sftUSD yield)", { size: 11 }));
-      L.push(line("--All time and all chains: what this wallet's sftUSD staking and Lend supply paid out,", { size: 11, color: C_FAINT }));
-      L.push(line("--so it does not follow the wallet's current size. FT held in ftPUTs is not counted.", { size: 11, color: C_FAINT }));
-    } else L.push(row("FT earned", "— unavailable"));
-    linkFrom(L, ac0, PAGES.rewards);
-    ac0 = L.length;
+      if (rw.claimableFt > 0) A.push(line("  " + fmtFt(rw.claimableFt) + " FT claimable (sftUSD yield)", { size: 11 }));
+      A.push(line("All time and all chains: what this wallet's sftUSD staking and Lend supply paid out,", { size: 11, color: C_FAINT }));
+      A.push(line("so it does not follow the wallet's current size. FT held in ftPUTs is not counted.", { size: 11, color: C_FAINT }));
+      sum.push(fmtFt(rw.totalFt) + " FT");
+    } else A.push(row("FT earned", "— unavailable"));
+    linkFrom(A, ac0, PAGES.rewards);
+    ac0 = A.length;
     if (d.points) {
       var rk = d.rank, pc = d.points.chains || [];
-      L.push(row("Points", fmtPoints(d.points.total) + "  all chains" + (rk ? "  rank #" + thousands(rk.rank) + " of " + thousands(rk.total) : "")));
-      for (var pi = 0; pi < pc.length; pi++) L.push(line("--" + padR(pc[pi].name, 10) + fmtPoints(pc[pi].points), { size: 11, font: "Menlo" }));
-      L.push(line("--flyingtulip.com/rewards shows one chain at a time, the all-networks total is under it", { size: 11, color: C_FAINT }));
-    } else L.push(row("Points", "— unavailable"));
-    linkFrom(L, ac0, PAGES.points);
-    ac0 = L.length;
+      A.push(row("Points", fmtPoints(d.points.total) + "  all chains" + (rk ? "  rank #" + thousands(rk.rank) + " of " + thousands(rk.total) : "")));
+      for (var pi = 0; pi < pc.length; pi++) A.push(line("  " + padR(pc[pi].name, 10) + fmtPoints(pc[pi].points), { size: 11, font: "Menlo" }));
+      A.push(line("flyingtulip.com/rewards shows one chain at a time, the all-networks total is under it", { size: 11, color: C_FAINT }));
+      sum.push(fmtPoints(d.points.total) + " pts");
+    } else A.push(row("Points", "— unavailable"));
+    linkFrom(A, ac0, PAGES.points);
+    ac0 = A.length;
     if (d.puts) {
       var pg = putGain(d.puts, d.price ? d.price.price : NaN);
-      if (pg) L.push(row("ftPUT", fmtPct(pg.gainPct) + "  " + fmtSignedUsd(pg.gainUsd), { color: deltaColor(pg.gainUsd) }));
-      else L.push(row("ftPUT", d.puts.count + " position" + (d.puts.count === 1 ? "" : "s")));
-      L.push(line("--Gain = FT held x FT market price - cost basis", { size: 11 }));
+      if (pg) A.push(row("ftPUT", fmtPct(pg.gainPct) + "  " + fmtSignedUsd(pg.gainUsd), { color: deltaColor(pg.gainUsd) }));
+      else A.push(row("ftPUT", d.puts.count + " position" + (d.puts.count === 1 ? "" : "s")));
+      A.push(line("Gain = FT held x FT market price - cost basis", { size: 11, color: C_FAINT }));
       for (var q = 0; q < d.puts.rows.length; q++)
-        L.push(line("--#" + d.puts.rows[q].nft + "  " + d.puts.rows[q].symbol + "  cost " + fmtUsd(d.puts.rows[q].costUsd) +
+        A.push(line("  #" + d.puts.rows[q].nft + "  " + d.puts.rows[q].symbol + "  cost " + fmtUsd(d.puts.rows[q].costUsd) +
           "  " + fmtFt(d.puts.rows[q].ft) + " FT", { size: 11, font: "Menlo" }));
     }
-    linkFrom(L, ac0, PAGES.put);
-    ac0 = L.length;
-    if (d.positions) {
-      if (d.positions.length) {
-        L.push(row("Positions", d.positions.length + " open"));
-        for (var k = 0; k < d.positions.length && k < 12; k++) {
-          var ps = d.positions[k];
-          var lev = isFinite(ps.leverage) && ps.leverage > 0 ? " " + ps.leverage.toFixed(ps.leverage >= 10 ? 0 : 1) + "x" : "";
-          L.push(line("--" + padR(ps.symbol + " " + ps.side + lev, 14) + padR(ps.network, 10) + "mark " + fmtPrice(ps.mark) +
-            "  " + fmtSignedUsd(ps.pnlUsd), { size: 11, font: "Menlo", color: deltaColor(ps.pnlUsd), href: marketUrl(ps.market || (ps.symbol + "-ftUSD"), ps.chainId) }));
-        }
-      } else L.push(row("Positions", "none open"));
-    }
-    linkFrom(L, ac0, PAGES.portfolio);
+    linkFrom(A, ac0, PAGES.put);
   } else {
-    L.push(head("ACCOUNT"));
-    L.push(line("Add your wallet to see health factor, PnL, FT earned, points, ftPUT and positions", { size: 12, href: SITE }));
+    A.push(line("Add a wallet to see health factor, PnL, FT earned, points, ftPUT and positions", { size: 12, href: SITE }));
   }
+  // the wallet list: show any of them, add, edit, remove
+  if (selfPath) {
+    A.push("---");
+    for (var wi = 0; wi < n; wi++) {
+      var w = cfg.wallets[wi];
+      A.push(line((w === cfg.wallet ? "● " : "○ ") + shortAddr(w) + (w === cfg.wallet ? "  (shown)" : ""), act("show", w, { font: "Menlo", size: 12 })));
+    }
+    if (cfg.fromSettings) {
+      A.push(line("These wallets come from the plugin settings (VAR_WALLET).", { size: 11, color: C_FAINT, href: PAGES.portfolio }));
+      A.push(line("Change them there, or empty it to manage them from this menu.", { size: 11, color: C_FAINT, href: PAGES.portfolio }));
+    } else {
+      A.push(line("Add a wallet…", act("add")));
+      if (n > 0) A.push(line("Edit wallets…", act("wallet")));
+      if (cfg.wallet) A.push(line("Remove " + shortAddr(cfg.wallet), act("remove", cfg.wallet)));
+    }
+  }
+  var acHead = v.hasWallet ? "Account    " + shortAddr(cfg.wallet) + (sum.length ? "  " + sum.join("  ") : "") : "Account    add a wallet";
+  submenu(L, line(acHead, mono({ href: PAGES.portfolio, color: v.hfLevel === 2 ? C_RED : (v.hfLevel === 1 ? C_AMBER : undefined) })), A);
+
+  // ---- Positions (the wallet shown)
+  var P = [], posHead = "Positions  —";
+  if (v.hasWallet && d.positions) {
+    if (d.positions.length) {
+      posHead = "Positions  " + d.positions.length + " open";
+      for (var k = 0; k < d.positions.length && k < 20; k++) {
+        var ps = d.positions[k];
+        var lev = isFinite(ps.leverage) && ps.leverage > 0 ? " " + ps.leverage.toFixed(ps.leverage >= 10 ? 0 : 1) + "x" : "";
+        P.push(line(padR(ps.symbol + " " + ps.side + lev, 14) + padR(ps.network, 10) + "mark " + fmtPrice(ps.mark) +
+          "  " + fmtSignedUsd(ps.pnlUsd), { size: 11, font: "Menlo", color: deltaColor(ps.pnlUsd), href: marketUrl(ps.market || (ps.symbol + "-ftUSD"), ps.chainId) }));
+      }
+      if (d.positions.length > 20) P.push(line("+" + (d.positions.length - 20) + " more on flyingtulip.com", { size: 11, href: PAGES.portfolio }));
+    } else { posHead = "Positions  none open"; P.push(line("No open positions", { size: 11, href: PAGES.portfolio })); }
+  } else P.push(line(v.hasWallet ? "Unavailable right now" : "Add a wallet to see its open positions", { size: 11, href: PAGES.portfolio }));
+  submenu(L, line(posHead, mono({ href: PAGES.portfolio })), P);
   L.push("---");
 
   // footer
@@ -874,7 +945,7 @@ function render(d, age, cfg, nowMs, selfPath) {
   var oldest = 0, k2;
   for (k2 in age) if (!(d.__fetched && d.__fetched[k2]) && age[k2] > STALE_AFTER) oldest = Math.max(oldest, age[k2]);
   if (oldest > 0) L.push(line("Some sources are showing data up to " + ageText(oldest) + " old", { size: 10, color: C_AMBER }));
-  if (selfPath) L.push(line(cfg.wallet ? "Change wallet…" : "Set wallet…", { shell: selfPath, param1: "wallet", terminal: false, refresh: true, size: 12 }));
+  if (selfPath && !cfg.fromSettings) L.push(line(n ? "Wallets…" : "Add a wallet…", act(n ? "wallet" : "add", null, { size: 12 })));
   L.push(line("Public API only, no keys. Not financial advice.", { size: 10, color: C_FAINT, href: "https://flyingtulip.com" }));
   linkFrom(L, ft0, SITE);
   return L.join("\n");
@@ -882,14 +953,27 @@ function render(d, age, cfg, nowMs, selfPath) {
 
 // ---- main ------------------------------------------------------------------------------------------
 
+// Wallet list: "0xA, 0xB" (commas, spaces, semicolons or new lines) -> {list (lowercase, no duplicates), bad}.
+function parseWallets(text) {
+  var list = [], bad = [], parts = String(text || "").split(/[\s,;]+/);
+  for (var i = 0; i < parts.length; i++) {
+    if (!parts[i]) continue;
+    var w = normalizeWallet(parts[i]);
+    if (!w) bad.push(parts[i]);
+    else if (list.indexOf(w) < 0) list.push(w);
+  }
+  return { list: list, bad: bad };
+}
+
 function buildConfig(a) {
   var warn = parseThreshold(a.hfWarn, 1.40), crit = parseThreshold(a.hfCritical, 1.30);
   if (crit > warn) crit = warn;
   var raw = String(a.wallet || "").trim();
   var cd = num(a.cooldownMin);
   var pc = Number(a.priceChain);
+  var pw = parseWallets(raw);
   return {
-    walletRaw: raw, wallet: normalizeWallet(raw),
+    walletRaw: raw, wallets: pw.list, badWallets: pw.bad, wallet: pw.list[0] || "",
     alert: { warn: warn, critical: crit, cooldownMs: (isFinite(cd) && cd >= 1 ? cd : 30) * 60000 },
     notify: !/^(false|0|no|off)$/i.test(String(a.notify === undefined ? "true" : a.notify).trim()),
     priceChain: pc === 146 ? 146 : 1,
@@ -897,51 +981,127 @@ function buildConfig(a) {
   };
 }
 
-function runWalletPrompt(io, cfg) {
-  var cur = io.readFile(cfg.walletFile);
-  var input = io.prompt(cur ? cur.replace(/\s+/g, "") : "");
+// "Wallets…" edits the whole list (comma separated), "Add a wallet…" appends, "Remove 0x…" drops one. The list is
+// saved one address per line in the wallet file (a 1.0.x file with one address is the same format).
+function savedWallets(io, cfg) { return parseWallets(io.readFile(cfg.walletFile) || "").list; }
+function writeWallets(io, cfg, list) { io.writeFile(cfg.walletFile, list.join("\n")); }
+function runWalletPrompt(io, cfg, mode, arg) {
+  var cur = savedWallets(io, cfg);
+  if (mode === "remove") {
+    writeWallets(io, cfg, cur.filter(function (w) { return w !== normalizeWallet(arg); }));
+    return "";
+  }
+  var input = mode === "add"
+    ? io.prompt("", "Public wallet address to add (0x...).")
+    : io.prompt(cur.join(", "), "Public wallet addresses to track (0x...), comma separated. Leave empty to clear.");
   if (input === null) return "";
-  var t = String(input).trim();
-  if (t !== "" && !normalizeWallet(t)) { io.alert("Not a valid address. Use 0x followed by 40 hex characters."); return ""; }
-  io.writeFile(cfg.walletFile, t === "" ? "" : normalizeWallet(t));
+  var p = parseWallets(input);
+  if (p.bad.length) { io.alert("Not a valid address: " + String(p.bad[0]).slice(0, 24) + ". Use 0x followed by 40 hex characters."); return ""; }
+  var list = mode === "add" ? cur.concat(p.list.filter(function (w) { return cur.indexOf(w) < 0; })) : p.list;
+  writeWallets(io, cfg, list);
   return "";
+}
+
+var ROTATE_MS = 50000;   // the plugin runs every minute: each run past this shows the next wallet
+
+// The wallet whose health factor is at or below the warning line (the lowest one when several are), else "".
+function pinnedWallet(st, wallets) {
+  var best = "", bestHf = Infinity;
+  for (var i = 0; i < wallets.length; i++) {
+    var x = st.wallets[wallets[i]];
+    if (!x || !x.alert || !(x.alert.level >= 1)) continue;
+    var lo = x.cache.lend ? lowestHf(x.cache.lend.v || []) : null;
+    if (lo && lo.hf < bestHf) { best = wallets[i]; bestHf = lo.hf; }
+  }
+  return best;
+}
+function hasDebt(list) {
+  for (var i = 0; list && i < list.length; i++) if (list[i].debtUsd > 0.01) return true;
+  return false;
+}
+
+// Alerts for one wallet, from a lend read made this run only. Returns true when its level went up.
+function alertWallet(io, cfg, st, w, nowMs) {
+  var slot = walletSlot(st, w), prev = slot.alert.level || 0, lend = slot.cache.lend ? slot.cache.lend.v : null;
+  var dn = decideNotify(slot.alert, lend ? lowestHf(lend) : null, { warn: cfg.alert.warn, critical: cfg.alert.critical, cooldownMs: cfg.alert.cooldownMs }, nowMs);
+  slot.alert = dn.state;
+  if (dn.notify && cfg.notify) {
+    if (cfg.wallets.length > 1) dn.notify.wallet = shortAddr(w);
+    var nt = notifyText(dn.notify); io.notify(nt.title, nt.body, nt.urgency);
+  }
+  return dn.state.level > prev;
 }
 
 function main(io, a, nowMs) {
   var cfg = buildConfig(a);
-  if (a.cmd === "wallet") return runWalletPrompt(io, cfg);
-  // wallet from the plugin settings wins; otherwise the one saved by "Set wallet..."
-  if (!cfg.walletRaw && cfg.walletFile) {
-    var saved = (io.readFile(cfg.walletFile) || "").trim();
-    if (saved) { cfg.walletRaw = saved; cfg.wallet = normalizeWallet(saved); }
+  if (a.cmd === "wallet" || a.cmd === "add" || a.cmd === "remove") return runWalletPrompt(io, cfg, a.cmd, a.arg);
+  // wallets from the plugin settings win; otherwise the ones saved from the menu
+  cfg.fromSettings = cfg.wallets.length > 0 || cfg.badWallets.length > 0;
+  if (!cfg.fromSettings && cfg.walletFile) {
+    cfg.wallets = savedWallets(io, cfg); cfg.wallet = cfg.wallets[0] || "";
   }
   var statePath = cfg.stateDir + "/state.json";
   var st = loadState(io, statePath);
-  if (st.wallet !== cfg.wallet) {   // wallet changed: drop everything that belongs to the old one
-    var keep = { price: 1, fees: 1, feesSeries: 1, klines: 1 }, nc = {};
-    for (var k in st.cache) if (keep[k]) nc[k] = st.cache[k];
-    st.cache = nc; st.wallet = cfg.wallet; st.alert = { level: 0, last: {} };
+  for (var w0 in st.wallets) if (cfg.wallets.indexOf(w0) < 0) delete st.wallets[w0];   // removed wallets
+
+  // which wallet to show: a manual pick, else every minute the next one, except while one is low (it stays)
+  var n = cfg.wallets.length, cur = cfg.wallets.indexOf(st.cur) >= 0 ? st.cur : (cfg.wallets[0] || "");
+  var next = function (w) { return cfg.wallets[(cfg.wallets.indexOf(w) + 1) % n]; };
+  if (n && a.cmd === "next") { cur = next(cur); st.shownAt = nowMs; }
+  else if (n && a.cmd === "show" && cfg.wallets.indexOf(normalizeWallet(a.arg)) >= 0) { cur = normalizeWallet(a.arg); st.shownAt = nowMs; }
+  else if (!st.shownAt) st.shownAt = nowMs;   // first run: start on the first wallet
+  else if (n > 1 && nowMs - st.shownAt >= ROTATE_MS) { cur = pinnedWallet(st, cfg.wallets) || next(cur); st.shownAt = nowMs; }
+
+  // fetch: market, the shown wallet in full, and /mm/lend of the hidden wallets when due (every run while they have
+  // debt, every 10 minutes otherwise)
+  var specsFor = function (shown) {
+    var specs = sourceSpecs(cfg, shown);
+    if (shown) {
+      var slot = walletSlot(st, shown);
+      for (var i = 4; i < specs.length; i++) specs[i].store = slot.cache;   // the first 4 are the market sources
+      for (var j = 0; j < cfg.wallets.length; j++) {
+        var w = cfg.wallets[j]; if (w === shown) continue;
+        var ws = walletSlot(st, w), sp = lendSpec(w, hasDebt(ws.cache.lend && ws.cache.lend.v) ? 0 : SLOW_TTL);
+        sp.store = ws.cache; sp.id = "lend@" + w; specs.push(sp);
+      }
+    }
+    return specs;
+  };
+  var res = loadSources(io, specsFor(cur), st.cache, nowMs);
+  // alerts: the shown wallet and every hidden wallet read this run; one that just turned low is shown at once
+  var jump = "";
+  if (cur && res.fetched.lend) alertWallet(io, cfg, st, cur, nowMs);
+  for (var k = 0; k < n; k++) {
+    var hw = cfg.wallets[k];
+    if (hw !== cur && res.fetched["lend@" + hw] && alertWallet(io, cfg, st, hw, nowMs) && !jump) jump = hw;
   }
-  var res = loadSources(io, sourceSpecs(cfg, cfg.wallet), st.cache, nowMs);
-  var d = res.data, age = res.age;
+  if (jump) {
+    cur = jump; st.shownAt = nowMs;
+    var r2 = loadSources(io, specsFor(cur).slice(4).filter(function (s) { return !s.id; }), st.cache, nowMs);
+    for (var f in r2.fetched) res.fetched[f] = true;
+  }
+  st.cur = cur;
+  cfg.wallet = cur;
+
+  // the shown wallet's values (each kept in its own cache) next to the market ones
+  var d = {}, age = {}, mk;
+  for (mk in res.data) if (MARKET_KEYS[mk]) { d[mk] = res.data[mk]; age[mk] = res.age[mk]; }
+  if (cur) {
+    var c = walletSlot(st, cur).cache;
+    for (var key in c) if (key !== "rank") { d[key] = c[key].v; age[key] = Math.round((nowMs - c[key].t) / 1000); }
+  }
   // price chain fallback: Sonic ticker when the configured chain has no FT-ftUSD market
   if (!res.fetched.price && cfg.priceChain !== 146 && !d.price) {
     var alt = parseJson(io.fetchAll([API + "/mm/spot/tickers?chainId=146"])[0]), ap = parsePrice(alt);
     if (ap) { st.cache.price = { t: nowMs, v: ap }; d.price = ap; age.price = 0; res.fetched.price = true; }
   }
-  if (cfg.wallet && d.points) {
-    var rc = st.cache.rank;
+  if (cur && d.points) {
+    var cc = walletSlot(st, cur).cache, rc = cc.rank;
     if (!rc || nowMs - rc.t >= SLOW_TTL * 1000) {
-      var rv = findRank(io, cfg.wallet, d.points.total);
-      if (rv !== FAIL) st.cache.rank = { t: nowMs, v: rv };
+      var rv = findRank(io, cur, d.points.total);
+      if (rv !== FAIL) cc.rank = { t: nowMs, v: rv };
     }
-    d.rank = st.cache.rank ? st.cache.rank.v : null;
-  }
-  // liquidation alerts, only from a lend read made this run
-  if (cfg.wallet && res.fetched.lend) {
-    var dn = decideNotify(st.alert, lowestHf(d.lend), { warn: cfg.alert.warn, critical: cfg.alert.critical, cooldownMs: cfg.alert.cooldownMs }, nowMs);
-    st.alert = dn.state;
-    if (dn.notify && cfg.notify) { var nt = notifyText(dn.notify); io.notify(nt.title, nt.body, nt.urgency); }
+    d.rank = cc.rank ? cc.rank.v : null;
   }
   d.__fetched = res.fetched;
   try { saveState(io, statePath, st); } catch (e) { /* cache is optional */ }
@@ -981,10 +1141,10 @@ function jxaIO() {
     notify: function (title, body, urgency) {
       app.displayNotification(body, { withTitle: title, subtitle: "Flying Tulip", soundName: urgency === "critical" ? "Basso" : "Glass" });
     },
-    prompt: function (cur) {
+    prompt: function (cur, msg) {
       try {
         try { app.activate(); } catch (e) { /* the dialog still shows */ }
-        var r = app.displayDialog("Public wallet address to track (0x...). Leave empty to clear.", {
+        var r = app.displayDialog(msg || "Public wallet addresses to track (0x...), comma separated. Leave empty to clear.", {
           defaultAnswer: cur, withTitle: "Flying Tulip", buttons: ["Cancel", "Save"], defaultButton: "Save", cancelButton: "Cancel" });
         return r.textReturned;
       } catch (e) { return null; }
@@ -996,7 +1156,7 @@ function jxaIO() {
 function run(argv) {
   var a = {
     cmd: argv[0] || "run", wallet: argv[1] || "", hfWarn: argv[2], hfCritical: argv[3], notify: argv[4],
-    cooldownMin: argv[5], priceChain: argv[6], stateDir: argv[7], walletFile: argv[8], self: argv[9]
+    cooldownMin: argv[5], priceChain: argv[6], stateDir: argv[7], walletFile: argv[8], self: argv[9], arg: argv[10] || ""
   };
   try { return main(jxaIO(), a, Date.now()); }
   catch (e) { return line("FT ⚠", { image: LOGO_B64, color: C_AMBER }) + "\n---\n" + line("Plugin error: " + e, { color: C_RED }) + "\n" + line("Open flyingtulip.com", { href: SITE }); }
@@ -1004,7 +1164,7 @@ function run(argv) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    main: main, buildConfig: buildConfig, render: render, loadSources: loadSources, sourceSpecs: sourceSpecs, findRank: findRank,
+    main: main, buildConfig: buildConfig, parseWallets: parseWallets, pinnedWallet: pinnedWallet, render: render, loadSources: loadSources, sourceSpecs: sourceSpecs, findRank: findRank,
     parseFees: parseFees, parsePrice: parsePrice, parseLend: parseLend, parseSummary: parseSummary, mergeChains: mergeChains,
     lowestHf: lowestHf, parseRewards: parseRewards, earnedByChain: earnedByChain, parsePuts: parsePuts, putGain: putGain, parsePoints: parsePoints,
     rankInPage: rankInPage, parsePositions: parsePositions, parseFeesSeries: parseFeesSeries, parseKlines: parseKlines,
@@ -1026,4 +1186,5 @@ exec /usr/bin/osascript -l JavaScript -e "$FT_JS" \
   "${VAR_PRICE_CHAIN:-1}" \
   "$CACHE_DIR" \
   "$WALLET_FILE" \
-  "$SELF" 2>&1
+  "$SELF" \
+  "${2:-}" 2>&1

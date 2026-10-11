@@ -84,12 +84,13 @@ function leaderboardPage(url, rank, pts) {
 }
 function world(opts) {
   opts = Object.assign({ hf: 1.9, fail: [] }, opts)
+  const hfFor = u => { for (const k in (opts.hfBy || {})) if (u.toLowerCase().includes(k)) return typeof opts.hfBy[k] === "function" ? opts.hfBy[k]() : opts.hfBy[k]; return opts.hf }
   const routes = [
     [/tickers\?chainId=1$/, fx("tickers.json")], [/fees\/application\?period=1d/, fx("fees.json")],
     [/fees\/application\?period=1m/, fx("fees_series.json")], [/klines/, fx("klines.json")],
     [/mm\/lend\?user=.*chainId=143/, { data: { chains: [] } }],
-    [/mm\/lend\?user=/, () => ({ data: { chains: [
-      { chainId: 146, hfLiquidationThreshold: 1.25, userMetrics: { totalDebtUsd: 1000, healthFactor: opts.hf, equityUsd: 500 } },
+    [/mm\/lend\?user=/, u => ({ data: { chains: [
+      { chainId: 146, hfLiquidationThreshold: 1.25, userMetrics: { totalDebtUsd: 1000, healthFactor: hfFor(u), equityUsd: 500 } },
       { chainId: 1, userMetrics: { totalDebtUsd: 0, healthFactor: 0, equityUsd: 25 } }] } })],
     [/account\/summary.*chainId=146/, [{ chainId: 146, unrealizedPnl: "12.5" }]],
     [/account\/summary.*chainId=1$/, [{ chainId: 1, unrealizedPnl: "-2" }]],
@@ -126,7 +127,7 @@ ok("no wallet: market only, valid format, no account calls", () => {
   const w = world(), out = M.main(w.io, args({}), NOW)
   assert.deepEqual(validate(out), [])
   const title = out.split("\n")[0]; assert(/^\$0\.\d{4}  fees \$/.test(title) && title.includes("image="), title); assert(!title.includes("HF"))
-  assert(out.includes("Add your wallet")); assert(!w.calls.flat().some(u => /user=|address=|walletAddress/.test(u)))
+  assert(out.includes("Add a wallet")); assert(!w.calls.flat().some(u => /user=|address=|walletAddress/.test(u)))
   assert(out.includes("href=https://flyingtulip.com/statistics/")); assert(out.includes("refresh=true")); assert(!/YES|NO\b.*live/i.test(out))
   assert(w.calls.flat().every(u => u.startsWith("https://api.flyingtulip.com/")))
 })
@@ -134,7 +135,7 @@ ok("wallet: HF, PnL, FT earned, points+rank, ftPUT, positions", () => {
   const w = world(), out = M.main(w.io, args({ wallet: DEAD }), NOW)
   assert.deepEqual(validate(out), [])
   assert(/^\$0\.\d{4}  fees \$\S+  HF 1\.90 \|/.test(out.split("\n")[0]), out.split("\n")[0])
-  for (const s of ["Health      1.90  Sonic (lowest)", "PnL         +$10.50", "FT earned   153.0 FT", "rank #777 of 2,000", "Positions   1 open", "ftPUT       "])
+  for (const s of ["Health      1.90  Sonic (lowest)", "PnL         +$10.50", "FT earned   153.0 FT", "rank #777 of 2,000", "Positions  1 open", "ftPUT       "])
     assert(out.includes(s), "missing: " + s + "\n" + out)
   assert(out.includes("0x0000…dead".replace("dead", "dEaD").toLowerCase()) || out.includes("0x0000…dead"))
   assert(!out.includes("Wallet is not"))
@@ -168,12 +169,12 @@ ok("FT earned and points rows say what they cover, with the breakdown in the sub
   w.io.fetchAll = urls => orig(urls).map((b, i) => (/account\/dashboard/.test(urls[i]) ? JSON.stringify(SMALL_REWARDS) : /points\?walletAddress/.test(urls[i]) ? JSON.stringify(POINTS_2CHAINS) : b))
   const out = M.main(w.io, args({ wallet: DEAD }), NOW)
   assert.deepEqual(validate(out), [])
-  for (const s of ["FT earned   95.4 FT  all time", "--sftUSD yield     95.4 FT  (claimed 95.4, pending 0)", "--Lend FT rewards  0 FT", "--By chain: Sonic 95.4",
-    "Points      662K  all chains", "--Ethereum  616K", "--Sonic     45.8K", "one chain at a time"])
+  for (const s of ["--FT earned   95.4 FT  all time", "--  sftUSD yield     95.4 FT  (claimed 95.4, pending 0)", "--  Lend FT rewards  0 FT", "--  By chain: Sonic 95.4",
+    "--Points      662K  all chains", "--  Ethereum  616K", "--  Sonic     45.8K", "one chain at a time", "Account    0x0000…dead  HF 1.90  95.4 FT  662K pts"])
     assert(out.includes(s), "missing: " + s + "\n" + out)
 })
 ok("every dropdown line links to a real flyingtulip.com page", () => {
-  const w = world(), out = M.main(w.io, args({ wallet: DEAD }), NOW), lines = out.split("\n").slice(1).filter(l => l !== "---")
+  const w = world(), out = M.main(w.io, args({ wallet: DEAD }), NOW), lines = out.split("\n").slice(1).filter(l => !/^-+$/.test(l))
   for (const l of lines) assert(/ (href|shell|refresh)=/.test(l.replace(/^[^|]*\|/, " ")), "no link: " + l)
   const href = l => (l.match(/href=(\S+)/) || [])[1]
   const find = s => lines.find(l => l.includes(s))
@@ -196,7 +197,7 @@ ok("no debt anywhere shows infinity", () => {
 })
 ok("invalid wallet is flagged, not fetched", () => {
   const w = world(), out = M.main(w.io, args({ wallet: "0x123" }), NOW)
-  assert(out.includes("not a valid address")); assert(!w.calls.flat().some(u => /user=/.test(u))); assert.deepEqual(validate(out), [])
+  assert(out.includes("Not a valid address")); assert(!w.calls.flat().some(u => /user=/.test(u))); assert.deepEqual(validate(out), [])
 })
 ok("notifications: warn once, critical on the next crossing, nothing inside the cooldown", () => {
   const w = world({ hf: 1.38 }); let out = M.main(w.io, args({ wallet: DEAD }), NOW)
@@ -244,7 +245,7 @@ ok("pipes and newlines from API text cannot break the menu", () => {
 })
 ok("Set wallet prompt: saves lowercase, rejects junk, empty clears, plugin setting wins", () => {
   let w = world({ prompt: " " + DEAD + " " }); M.main(w.io, args({ cmd: "wallet" }), NOW); assert.equal(w.files["/w/wallet"], DEAD.toLowerCase())
-  let out = M.main(w.io, args({}), NOW); assert(out.includes("ACCOUNT  0x0000"))
+  let out = M.main(w.io, args({}), NOW); assert(out.includes("Account    0x0000"))
   out = M.main(w.io, args({ wallet: "0x" + "2".repeat(40) }), NOW); assert(out.includes("0x2222…2222"))
   w = world({ prompt: "junk" }); M.main(w.io, args({ cmd: "wallet" }), NOW); assert(!("/w/wallet" in w.files)); assert(w.notes[0].alert)
   w = world({ prompt: "" }); w.files["/w/wallet"] = DEAD; M.main(w.io, args({ cmd: "wallet" }), NOW); assert.equal(w.files["/w/wallet"], "")
@@ -254,6 +255,91 @@ ok("thresholds: critical is clamped to warn, junk falls back to defaults", () =>
   assert.equal(M.buildConfig({ hfWarn: "1.2", hfCritical: "1.5" }).alert.critical, 1.2)
   const d = M.buildConfig({ hfWarn: "abc", hfCritical: "", priceChain: "99", notify: "FALSE", cooldownMin: "x" })
   assert.equal(d.alert.warn, 1.4); assert.equal(d.alert.critical, 1.3); assert.equal(d.priceChain, 1); assert.equal(d.notify, false); assert.equal(d.alert.cooldownMs, 30 * 60000)
+})
+
+ok("positions endpoint answering null (its reply for a wallet with none) means none open, not unavailable", () => {
+  const w = world(), orig = w.io.fetchAll
+  w.io.fetchAll = urls => orig(urls).map((b, i) => (/positions/.test(urls[i]) ? "null" : b))
+  const out = M.main(w.io, args({ wallet: DEAD }), NOW); assert(/^Positions  none open/m.test(out), out)
+})
+ok("a null body from any other endpoint is a failure, not an empty answer (lend keeps its last value)", () => {
+  const w = world(); M.main(w.io, args({ wallet: DEAD }), NOW)
+  const w2 = world(); Object.assign(w2.io, { readFile: p => (p in w.files ? w.files[p] : null), writeFile: (p, t) => { w.files[p] = t } }); const orig = w2.io.fetchAll
+  w2.io.fetchAll = urls => orig(urls).map((b, i) => (/mm\/lend/.test(urls[i]) ? "null" : b))
+  const out = M.main(w2.io, args({ wallet: DEAD }), NOW + 60e3)
+  assert(out.split("\n")[0].includes("HF 1.90"), out.split("\n")[0]); assert(!out.includes("∞  no debt"))
+})
+// ---- several wallets ----
+const W1 = "0x" + "1".repeat(40), W2 = "0x" + "2".repeat(40), W3 = "0x" + "3".repeat(40)
+const sh = w => w.slice(0, 6) + "…" + w.slice(-4)
+const share = (w, w2) => Object.assign(w2.io, { readFile: p => (p in w.files ? w.files[p] : null), writeFile: (p, t) => { w.files[p] = t } })
+const lendCalls = (w, addr) => w.calls.flat().filter(u => u.includes("/mm/lend?user=" + addr) && !u.includes("chainId=143")).length
+ok("wallet list parsing: commas, spaces, duplicates, junk", () => {
+  const p = M.parseWallets(" " + W1 + ", " + W2.toUpperCase().replace("0X", "0x") + ";" + W1 + "\n0x12 ")
+  assert.deepEqual(p.list, [W1, W2]); assert.deepEqual(p.bad, ["0x12"])
+})
+ok("two wallets: title names the shown one with the switch sign, one minute later the next one", () => {
+  const w = world(); let out = M.main(w.io, args({ wallet: W1 + ", " + W2 }), NOW)
+  assert.deepEqual(validate(out), [])
+  assert(out.split("\n")[0].includes(sh(W1) + " ⇄"), out.split("\n")[0])
+  assert(/^Next wallet ⇄ \| .*param1=next/m.test(out), "next-wallet action")
+  assert(out.includes("Showing " + sh(W1) + "  (1 of 2)"))
+  assert(w.calls.flat().some(u => u.includes("walletAddress=" + W1)) && !w.calls.flat().some(u => u.includes("walletAddress=" + W2)))
+  assert.equal(lendCalls(w, W2), 1, "hidden wallet's health is read too")
+  out = M.main(w.io, args({ wallet: W1 + ", " + W2 }), NOW + 20e3); assert(out.split("\n")[0].includes(sh(W1)), "a manual refresh does not rotate")
+  out = M.main(w.io, args({ wallet: W1 + ", " + W2 }), NOW + 60e3); assert(out.split("\n")[0].includes(sh(W2)))
+  out = M.main(w.io, args({ wallet: W1 + ", " + W2 }), NOW + 120e3); assert(out.split("\n")[0].includes(sh(W1)))
+})
+ok("Next wallet and a click on a wallet in the list switch at once", () => {
+  const w = world(), a3 = W1 + "," + W2 + "," + W3
+  M.main(w.io, args({ wallet: a3 }), NOW)
+  let out = M.main(w.io, args({ wallet: a3, cmd: "next" }), NOW + 5e3); assert(out.split("\n")[0].includes(sh(W2)))
+  out = M.main(w.io, args({ wallet: a3, cmd: "show", arg: W1 }), NOW + 9e3); assert(out.split("\n")[0].includes(sh(W1)))
+  assert(new RegExp("^--● " + sh(W1) + "  \\(shown\\) \\|.*param1=show param2=" + W1, "m").test(out), "list marks the shown wallet")
+  assert(new RegExp("^--○ " + sh(W3) + " \\|.*param2=" + W3, "m").test(out))
+})
+ok("a hidden wallet going low: shown in the same run, named in the alert, kept while low; a peek comes back", () => {
+  let hf2 = 1.9
+  const w = world({ hfBy: { [W2]: () => hf2 } }), A = args({ wallet: W1 + ", " + W2 })
+  M.main(w.io, A, NOW); assert.equal(w.notes.length, 0)
+  hf2 = 1.36
+  let out = M.main(w.io, A, NOW + 20e3)                    // debt: read every run, no rotation yet
+  assert(out.split("\n")[0].includes(sh(W2)), "jumped to the low wallet"); assert(out.split("\n")[0].includes("HF 1.36"))
+  assert.equal(w.notes.length, 1); assert(w.notes[0].b.startsWith(sh(W2) + ": Sonic HF 1.36"), w.notes[0].b)
+  out = M.main(w.io, A, NOW + 80e3); assert(out.split("\n")[0].includes(sh(W2)), "stays while low"); assert.equal(w.notes.length, 1)
+  out = M.main(w.io, Object.assign({}, A, { cmd: "next" }), NOW + 90e3); assert(out.split("\n")[0].includes(sh(W1)), "peek")
+  out = M.main(w.io, A, NOW + 150e3); assert(out.split("\n")[0].includes(sh(W2)), "back to the low wallet")
+  hf2 = 2.5; M.main(w.io, A, NOW + 160e3); out = M.main(w.io, A, NOW + 220e3); assert(out.split("\n")[0].includes(sh(W1)), "rotation resumes")
+})
+ok("hidden wallets without debt are read every 10 minutes, not every minute", () => {
+  const w = world(), orig = w.io.fetchAll
+  w.io.fetchAll = urls => orig(urls).map((b, i) => (urls[i].includes("/mm/lend?user=" + W2) && !urls[i].includes("143") ? JSON.stringify({ data: { chains: [{ chainId: 146, userMetrics: { totalDebtUsd: 0, healthFactor: 0 } }] } }) : b))
+  const A = args({ wallet: W1 + "," + W2 })
+  M.main(w.io, A, NOW); M.main(w.io, A, NOW + 20e3); M.main(w.io, A, NOW + 40e3)
+  assert.equal(lendCalls(w, W2), 1)
+})
+ok("Add a wallet, Edit wallets, Remove: saved in the wallet file, one per line", () => {
+  let w = world({ prompt: W2 }); w.files["/w/wallet"] = W1
+  M.main(w.io, args({ cmd: "add" }), NOW); assert.equal(w.files["/w/wallet"], W1 + "\n" + W2)
+  let out = M.main(w.io, args({}), NOW); assert(out.includes("(1 of 2)")); assert(/^--Add a wallet… \| .*param1=add/m.test(out)); assert(/^--Remove 0x1111…1111 \| .*param1=remove param2=0x1/m.test(out))
+  M.main(w.io, args({ cmd: "remove", arg: W1 }), NOW); assert.equal(w.files["/w/wallet"], W2)
+  w = world({ prompt: W3 + ", " + W1 }); M.main(w.io, args({ cmd: "wallet" }), NOW); assert.equal(w.files["/w/wallet"], W3 + "\n" + W1)
+  w = world({ prompt: W3 + ", junk" }); M.main(w.io, args({ cmd: "wallet" }), NOW); assert(!("/w/wallet" in w.files)); assert(w.notes[0].alert.includes("junk"))
+})
+ok("wallets from VAR_WALLET: the menu says so instead of offering add/edit/remove that would not apply", () => {
+  const w = world(), out = M.main(w.io, args({ wallet: W1 + "," + W2 }), NOW)
+  assert(!/param1=(add|wallet|remove)/.test(out)); assert(out.includes("come from the plugin settings (VAR_WALLET)"))
+  assert(/param1=show param2=/.test(out) && /param1=next/.test(out), "showing and switching still work")
+})
+ok("an upgrade from 1.0.x keeps the wallet's alert state (no second notification)", () => {
+  const w = world({ hf: 1.38 })
+  w.files["/s/state.json"] = JSON.stringify({ v: 1, wallet: DEAD.toLowerCase(), cache: {}, alert: { level: 1, last: { 1: NOW - 60e3 } } })
+  M.main(w.io, args({ wallet: DEAD }), NOW); assert.equal(w.notes.length, 0)
+})
+ok("dropdown: three submenus (Market, Account, Positions) and nothing else long at the top level", () => {
+  const w = world(), out = M.main(w.io, args({ wallet: DEAD }), NOW), top = out.split("\n").filter(l => !l.startsWith("-"))
+  assert(top.some(l => l.startsWith("Market ")) && top.some(l => l.startsWith("Account ")) && top.some(l => l.startsWith("Positions ")))
+  assert(top.length <= 10, top.length + " top-level lines:\n" + top.join("\n"))
 })
 
 // ---- the plugin file itself ----

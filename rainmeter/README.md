@@ -1,8 +1,9 @@
 # Flying Tulip for Windows (Rainmeter)
 
 A [Rainmeter](https://www.rainmeter.net) skin that puts Flying Tulip on your desktop: FT market price, 24h application
-fees with a 31-day bar chart and a 30-day FT price line and, for a wallet you set, health factor with liquidation alerts,
-PnL, FT earned, points and rank, ftPUT gain and open positions. Dark panel with the Flying Tulip purple accent.
+fees with a 31-day bar chart and a 30-day FT price line and, for the wallets you set, health factor with liquidation
+alerts, PnL, FT earned, points and rank, ftPUT gain and open positions. Dark panel with the Flying Tulip purple accent,
+in three tabs (Market, Account, Positions) so nothing is cut off; the skin remembers the last tab.
 
 Data comes only from `https://api.flyingtulip.com`. No keys, no RPC.
 
@@ -18,33 +19,52 @@ Data comes only from `https://api.flyingtulip.com`. No keys, no RPC.
 Needs Rainmeter 4.5 or later (the Shape meter and the bundled WebParser and InputText plugins). The toast notification
 needs Windows 10 or later with Windows PowerShell 5.1 (preinstalled).
 
-## Set your wallet
+## Set your wallets
 
-- Click **Set wallet** on the skin (or right-click the skin > *Set wallet...*), paste the 0x address, press Enter. It
-  is validated (0x + 40 hex characters), written lowercase to `@Resources\Settings.inc`, and the skin reloads. Empty
-  input clears it.
-- Or edit `Settings.inc` yourself (right-click the skin > *Edit settings*), then *Refresh skin*.
+- Click the **cog** at the top right of the skin (or **Wallets** at the bottom, or right-click the skin > *Wallets and
+  settings...*). A box opens with your wallet list: add, change or remove addresses (comma separated) and press Enter.
+  Each is validated (0x + 40 hex characters), written lowercase to `@Resources\Settings.inc`, and the skin reloads.
+  An empty box clears every wallet.
+- Right-click > *Add a wallet...* opens an empty box for one more address. *Remove the wallet shown* drops the one on
+  screen. *Edit the settings file* opens `Settings.inc` for the alert thresholds and refresh times.
 
-The InputText plugin that draws the input box ships with Rainmeter. Only a public address is ever needed.
+The InputText plugin that draws the input box ships with Rainmeter. Only public addresses are ever needed.
+
+Your wallets survive updates: Rainmeter keeps `Settings.inc` values when a newer `.rmskin` is installed, and the skin also
+keeps a copy outside its own folder (`FlyingTulip-wallets.txt` in Rainmeter's settings folder) that it reads back if
+the skin folder is ever replaced. A 1.0.x `Wallet=` is still read.
+
+## Several wallets
+
+- The skin shows one wallet at a time (its short address and "1/2" under the title) and the next one every minute
+  (`RotateSeconds`). The switch icon next to the address, or right-click > *Show the next wallet*, switches at once.
+- If any wallet's health factor is at or below `HfWarn`, that wallet is shown at once and stays shown while it is low
+  (switching peeks at the others; the next minute it comes back). The toast names the wallet.
+- The wallets that are not shown are checked in the background, one request at a time: their health factor
+  (`/mm/lend`) every `RefreshSeconds` while they have debt, every 10 minutes otherwise. Everything else is fetched
+  for the wallet shown only.
 
 ## Settings (`@Resources\Settings.inc`)
 
 | variable | default | meaning |
 |---|---|---|
-| `Wallet` | empty | public address to track |
+| `Wallets` | empty | public addresses to track, comma separated |
+| `Wallet` | empty | the single wallet of 1.0.x, still read (the skin keeps it equal to the first one) |
+| `RotateSeconds` | `60` | seconds each wallet is shown before the next one (minimum 10) |
 | `HfWarn` | `1.40` | warning at or below this health factor |
 | `HfCritical` | `1.30` | critical at or below this health factor (keep it above 1.25) |
 | `NotifyCooldownMin` | `30` | minimum minutes between two notifications of the same level |
 | `Notifications` | `1` | `1` shows a Windows toast on a crossing, `0` keeps only the on-skin warning |
 | `PriceChainId` | `1` | chain of the FT-ftUSD market price: `1` Ethereum or `146` Sonic |
 | `RefreshSeconds` | `60` | seconds between refreshes (minimum 15) |
+| `Tab` | | the tab last shown (written by the skin when you click a tab) |
 
 ## Liquidation alerts
 
 Positions can be liquidated while the health factor is below 1.25. At or below `HfWarn` the skin border turns amber and a
 banner shows the health factor; at or below `HfCritical` both turn red. Each level also shows one Windows toast (a short
 PowerShell script, `@Resources\Notify.ps1`), once per upward crossing with a 0.05 hysteresis and a cooldown per level.
-The alert state is saved in `@Resources\State.txt`, so reloading the skin does not repeat a notification. The on-skin
+The alert state is saved per wallet in `@Resources\State.txt`, so reloading the skin does not repeat a notification. The on-skin
 warning is always shown, so the skin still warns you if toasts are blocked (Focus Assist, group policy) or turned off.
 
 ## What each number is

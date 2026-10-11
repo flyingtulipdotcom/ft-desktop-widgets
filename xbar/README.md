@@ -27,23 +27,41 @@ Data comes only from `https://api.flyingtulip.com`. No keys, no RPC.
 
 Needs nothing else: stock macOS has bash, curl and osascript. No Homebrew, Node, Python or jq.
 
-## Set your wallet
+## Set your wallets
 
 Any one of these:
 
+- **From the dropdown**: *Add a wallet…* (bottom, and in the Account submenu) opens a small dialog for one address;
+  *Wallets…* edits the whole list (comma separated); *Remove 0x…* in the Account submenu drops the wallet shown.
+  Saved one per line in `~/Library/Application Support/FlyingTulip/menubar-wallet`.
 - **Plugin settings window** (xbar: click the plugin in the menu bar > *Open plugin...*, or the plugin's entry in the
-  xbar settings; SwiftBar: plugin entry > *Preferences*). Paste the address into **VAR_WALLET**.
-- **"Set wallet..."** in the dropdown: a small dialog, saved in
-  `~/Library/Application Support/FlyingTulip/menubar-wallet`. The plugin setting, when not empty, wins over this file.
-- Clear it by emptying both. Market data keeps working without a wallet.
+  xbar settings; SwiftBar: plugin entry > *Preferences*). Paste one address or several, comma separated, into
+  **VAR_WALLET**. When not empty it wins over the file above.
+- Clear them by emptying both. Market data keeps working without a wallet.
 
-Only a public address (0x + 40 hex characters) is ever needed.
+Only public addresses (0x + 40 hex characters) are ever needed.
+
+## Several wallets
+
+- The menu bar shows one wallet at a time and the next one every minute (each run of the plugin). With more than one
+  wallet the title ends with the shown wallet's short address and ⇄. *Next wallet ⇄* at the top of the dropdown
+  switches at once, and the Account submenu lists every wallet: click one to show it.
+- If any wallet's health factor is at or below `VAR_HF_WARN`, that wallet is shown in the same run and stays shown
+  while it is low (*Next wallet* peeks at the others, the next run comes back). The notification names the wallet.
+- The wallets you are not looking at are checked in the background: their health factor (`/mm/lend`) every run while
+  they have debt, every 10 minutes otherwise. Everything else is fetched for the wallet shown only.
+
+## The dropdown
+
+Three submenus instead of one long list: **Market** (price, fees, both charts), **Account** (the shown wallet's health
+factor per chain, PnL, FT earned with its breakdown, points per chain and rank, ftPUT, and the wallet list) and
+**Positions**. Each submenu's title line already carries the main numbers.
 
 ## Settings
 
 | variable | default | meaning |
 |---|---|---|
-| `VAR_WALLET` | empty | public address to track |
+| `VAR_WALLET` | empty | public addresses to track, comma separated |
 | `VAR_HF_WARN` | `1.40` | warning notification at or below this health factor |
 | `VAR_HF_CRITICAL` | `1.30` | critical notification at or below this health factor (keep it above 1.25) |
 | `VAR_NOTIFICATIONS` | `true` | show macOS notifications; `false` keeps only the coloured title |
@@ -77,7 +95,7 @@ shows every setting twice, delete the `<swiftbar.environment>` line.
 
 Positions can be liquidated while the health factor is below 1.25. A warning fires at or below `VAR_HF_WARN`, a critical
 alert at or below `VAR_HF_CRITICAL`; each fires once per upward crossing, with a 0.05 hysteresis and a cooldown per level.
-Alert state is kept in `~/Library/Caches/com.flyingtulip.menubar/state.json`, so it survives restarts. Alerts are only
+Alert state is kept per wallet in `~/Library/Caches/com.flyingtulip.menubar/state.json`, so it survives restarts. Alerts are only
 evaluated from a fresh read, never from cached data.
 
 ## Offline behaviour
