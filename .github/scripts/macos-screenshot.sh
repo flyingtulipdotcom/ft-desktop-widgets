@@ -48,7 +48,6 @@ launchctl setenv VAR_WALLET "$WALLET"
 shot() { screencapture -x "$OUT/$1.png" 2>>"$OUT/screencapture.log" || log "screencapture $1 failed"; }
 
 log "screen: $(system_profiler SPDisplaysDataType 2>/dev/null | grep -i resolution | head -1)"
-shot desktop-before
 
 xattr -dr com.apple.quarantine /Applications/SwiftBar.app 2>&1 | tee -a "$OUT/swiftbar-launch.log" || true
 open /Applications/SwiftBar.app >>"$OUT/swiftbar-launch.log" 2>&1 || log "open failed"
@@ -90,21 +89,21 @@ end tell
 AS
 osascript "$OUT/click.applescript" >"$OUT/click.log" 2>&1 || true
 cat "$OUT/click.log"
-# AX press of the SwiftBar status item (first try), then a real mouse click with cliclick (second try).
-( osascript -e 'tell application "System Events" to tell process "SwiftBar" to click menu bar item 1 of menu bar 1' >>"$OUT/click.log" 2>&1 & )
-sleep 4
-shot dropdown-open-ax
-osascript -e 'tell application "System Events" to key code 53' 2>/dev/null || true
-sleep 1
-brew install cliclick >>"$OUT/brew.log" 2>&1 || true
+# A real mouse click with cliclick on the status item (AX press does not open a SwiftBar menu on CI).
+brew install cliclick >>"$OUT/brew.log" 2>&1 || { log "cliclick install failed"; exit 1; }
 # The widget sits left of the search icon; click at its title (x about 1600 points).
 cliclick m:1600,12 >>"$OUT/click.log" 2>&1 || true
 sleep 1
 cliclick c:1600,12 >>"$OUT/click.log" 2>&1 || true
 sleep 3
-shot dropdown-open-cliclick
-cp "$OUT/dropdown-open-cliclick.png" "$OUT/dropdown-open.png"
+cropshot() { screencapture -x -R"$2" "$OUT/$1.png" 2>>"$OUT/screencapture.log" || log "screencapture $1 failed"; }
+cropshot dropdown-open 1400,0,520,340
+# Submenus open on hover, to the left of the menu (it is at the right edge of the screen).
+cliclick m:1600,118 >>"$OUT/click.log" 2>&1; sleep 2; cropshot submenu-market 700,0,1220,620
+cliclick m:1600,140 >>"$OUT/click.log" 2>&1; sleep 2; cropshot submenu-account 700,0,1220,620
+cliclick m:1600,162 >>"$OUT/click.log" 2>&1; sleep 2; cropshot submenu-positions 700,0,1220,620
 cliclick kp:esc >/dev/null 2>&1 || true
+rm -f "$OUT/full-screen.png"
 
 # Keep the SwiftBar and TCC diagnostics for the report.
 sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" 'select service,client,auth_value from access' >"$OUT/tcc-user.txt" 2>&1 || true
