@@ -22,7 +22,8 @@
     wallet going low shown at once with a toast naming it and kept shown while low, a 1.0.x `Wallet=` and
     `State.txt` carried over, wallets restored from the copy outside the skin folder
   - tabs: one tab's meters at a time, the choice written to `Settings.inc` and restored, header and footer always
-    shown, every meter above the footer (nothing cut off)
+    shown, every meter above the footer (nothing cut off), Account rows on one grid with no hole where a detail
+    line is empty
   - FT earned and points broken down on the Account tab (sftUSD yield and Lend, per chain; points per chain, rank)
   - the JSON decoder, including skipped keys, and a 500 KB `/mm/lend` body
   - every parser, the formatting, the alert state machine

@@ -591,7 +591,9 @@ end
 local function set(meter, option, value) SK:Bang("!SetOption", meter, option, value) end
 -- API text must not be interpreted as Rainmeter variables/measure references
 local function clean(t) return ((tostring(t):gsub("[#%[%]\r\n]", " "):gsub("\001", INF_REF))) end
+local shownText = {} -- what each meter was last given (the layout skips empty detail lines)
 local function setText(meter, text, color)
+  shownText[meter] = clean(text)
   set(meter, "Text", clean(text))
   if color then set(meter, "FontColor", color) end
 end
@@ -776,6 +778,29 @@ local TAB_METERS = {
 }
 local function validTab(t) return t == "market" or t == "account" or t == "positions" end
 
+-- Account tab rows stacked on one grid: every row 20 px (label and value on the same line), every detail line 16 px,
+-- a 6 px gap between groups. Empty detail lines take no room, so no group leaves a hole above the next one.
+local ACCOUNT_TOP, ROW_H, DETAIL_H, GROUP_GAP = 102, 20, 16, 6
+local ACCOUNT_GROUPS = {
+  { "MeterHfLbl", "MeterHfVal", { "MeterHfC1", "MeterHfC2", "MeterHfC3", "MeterHfC4" } },
+  { "MeterPnlLbl", "MeterPnlVal", {} },
+  { "MeterEarnLbl", "MeterEarnVal", { "MeterEarnD1", "MeterEarnD2", "MeterEarnD3" } },
+  { "MeterPointsLbl", "MeterPointsVal", { "MeterPointsD1", "MeterPointsD2" } },
+  { "MeterPutLbl", "MeterPutVal", {} },
+}
+local function layoutAccount(hasText)
+  local y = ACCOUNT_TOP
+  for _, g in ipairs(ACCOUNT_GROUPS) do
+    set(g[1], "Y", tostring(y)); set(g[2], "Y", tostring(y - 1))
+    y = y + ROW_H
+    for _, d in ipairs(g[3]) do
+      set(d, "Y", tostring(y - 1))
+      if hasText(d) then y = y + DETAIL_H end
+    end
+    y = y + GROUP_GAP
+  end
+end
+
 local function renderTabs()
   for _, name in ipairs(TAB_ORDER) do
     local on = S.tab == name
@@ -916,6 +941,7 @@ function M.render()
       if g and g.gainPct then setText("MeterPutVal", fmtPct(g.gainPct) .. "  " .. fmtSignedUsd(g.gainUsd), deltaColor(g.gainUsd))
       else setText("MeterPutVal", S.puts.count .. " position" .. (S.puts.count == 1 and "" or "s"), C_TEXT) end
     else setText("MeterPutVal", "none", C_FAINT) end
+    layoutAccount(function(m) return (shownText[m] or "") ~= "" end)
     local pos = allPositions()
     if pos then
       setText("MeterPosHead", #pos > 0 and ("Positions of " .. shortAddr(cfg.wallet) .. ": " .. #pos .. " open") or "Positions: none open", C_FAINT)

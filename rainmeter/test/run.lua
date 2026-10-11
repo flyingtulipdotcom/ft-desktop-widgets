@@ -551,6 +551,27 @@ ok("a hidden wallet whose only debt is on Monad is watched too", function()
   has(sk:text("MeterSub"), short(W2)); has(sk:text("MeterHfVal"), "1.35  Monad")
   has(readFile(sk.res .. "Notify.txt"), short(W2) .. ": Monad HF 1.35")
 end)
+ok("account tab: rows on one grid, no hole where a detail line is empty, label and value on the same line", function()
+  for _, over in ipairs({ { rewards = SMALL_REWARDS, points = POINTS_2CHAINS }, { lend = NO_DEBT, rewards = LARGE_REWARDS }, {} }) do
+    local sk = boot({ Wallets = W1 }, over); settle(sk); noErrors(sk)
+    local order = { "MeterHfLbl", "MeterHfC1", "MeterHfC2", "MeterHfC3", "MeterHfC4", "MeterPnlLbl", "MeterEarnLbl", "MeterEarnD1",
+      "MeterEarnD2", "MeterEarnD3", "MeterPointsLbl", "MeterPointsD1", "MeterPointsD2", "MeterPutLbl" }
+    local prev
+    for _, m in ipairs(order) do
+      local t = sk:text(m)
+      if t and t ~= "" then
+        local y = tonumber(sk:option(m, "Y"))
+        if prev then assert(y > prev and y - prev <= 27, m .. " at " .. y .. " after " .. prev) end
+        prev = y
+      end
+    end
+    for _, pair in ipairs({ { "MeterHfLbl", "MeterHfVal" }, { "MeterPnlLbl", "MeterPnlVal" }, { "MeterEarnLbl", "MeterEarnVal" },
+      { "MeterPointsLbl", "MeterPointsVal" }, { "MeterPutLbl", "MeterPutVal" } }) do
+      eq(tonumber(sk:option(pair[2], "Y")), tonumber(sk:option(pair[1], "Y")) - 1, pair[2])
+    end
+    assert(prev + 16 <= tonumber(sk:option("MeterBtnRefresh", "Y")), "last row above the footer")
+  end
+end)
 ok("the panel fits: every meter of every tab sits above the footer", function()
   local sk = boot({ Wallets = W1 })
   local footer = tonumber(sk:option("MeterBtnRefresh", "Y"))
