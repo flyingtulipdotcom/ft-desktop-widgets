@@ -162,12 +162,12 @@ jobs:
           $board = (Get-AppxPackage -AllUsers -Name MicrosoftWindows.Client.WebExperience -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0
           Log "Real Widgets Board available: $board"
           try {
-            Import-Certificate -FilePath (Get-ChildItem dist/*.cer).FullName -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+            Import-Certificate -FilePath (Get-ChildItem dist -Recurse -Filter *.cer | Select-Object -First 1).FullName -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
             Log "test certificate trusted"
             $rt = Join-Path $env:RUNNER_TEMP "rt.exe"
             Invoke-WebRequest "https://aka.ms/windowsappsdk/1.8/latest/windowsappruntimeinstall-x64.exe" -OutFile $rt
             Start-Process $rt -ArgumentList "--quiet" -Wait
-            Add-AppxPackage -Path (Get-ChildItem dist/*.msix).FullName
+            Add-AppxPackage -Path (Get-ChildItem dist -Recurse -Filter *.msix | Select-Object -First 1).FullName
             $p = Get-AppxPackage -Name FlyingTulip.WindowsWidget
             Log "MSIX install: $($p.PackageFullName)"
           } catch { Log "MSIX install failed: $($_.Exception.Message)" }
@@ -229,6 +229,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" --title "Windows 11 widget ${TAG#windows-widget-v}" --notes-file windows-widget/RELEASE_NOTES.md \
-            dist/FlyingTulipWidget.msix dist/FlyingTulipWidget-test.cer dist/install.ps1 dist/FlyingTulipWidget-windows.zip 2>&1 \
-            || gh release upload "$TAG" dist/FlyingTulipWidget.msix dist/FlyingTulipWidget-test.cer dist/install.ps1 dist/FlyingTulipWidget-windows.zip --clobber
+          mkdir rel
+          find dist -type f \( -name "*.msix" -o -name "*.cer" -o -name "install.ps1" -o -name "*.zip" \) -exec cp {} rel/ \;
+          ls -l rel
+          gh release create "$TAG" --title "Windows 11 widget ${TAG#windows-widget-v}" --notes-file windows-widget/RELEASE_NOTES.md rel/*
