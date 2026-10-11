@@ -306,10 +306,15 @@ ok("every value the script writes to a meter is plain ASCII", function()
 end)
 ok("price and position meters link to their trade pages", function()
   local sk = boot({ Wallet = DEAD, PriceChainId = "146" }); settle(sk)
-  eq(sk:option("MeterPriceVal", "LeftMouseUpAction"), '["https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=146&marketType=spot"]')
-  eq(sk:option("MeterPriceChart", "LeftMouseUpAction"), sk:option("MeterPriceVal", "LeftMouseUpAction"))
-  eq(sk:option("MeterPos1", "LeftMouseUpAction"), '["https://flyingtulip.com/trade/?symbol=wS-ftUSD&chainId=146&marketType=spot"]')
-  eq(sk:option("MeterPos2", "LeftMouseUpAction"), '["https://flyingtulip.com/trade/portfolio/"]')
+  local L = function(e, u) return [=[[!CommandMeasure MeasureScript "OpenLink(']=] .. e .. "','" .. u .. [=[')"]]=] end
+  eq(sk:option("MeterPriceVal", "LeftMouseUpAction"), L("market-ft-price", "https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=146&marketType=spot"))
+  eq(sk:option("MeterPriceChart", "LeftMouseUpAction"), L("market-price-chart", "https://flyingtulip.com/trade/?symbol=FT-ftUSD&chainId=146&marketType=spot"))
+  eq(sk:option("MeterPos1", "LeftMouseUpAction"), L("positions-row", "https://flyingtulip.com/trade/?symbol=wS-ftUSD&chainId=146&marketType=spot"))
+  eq(sk:option("MeterPos2", "LeftMouseUpAction"), L("positions-row", "https://flyingtulip.com/trade/portfolio/"))
+  -- a click counts the element and opens the page
+  sk:exec(sk:option("MeterPos1", "LeftMouseUpAction")); noErrors(sk)
+  eq(sk.runs[#sk.runs], [=["https://flyingtulip.com/trade/?symbol=wS-ftUSD&chainId=146&marketType=spot"]=])
+  has(sk.runs[#sk.runs - 1], '"Link click" "1.2.0"'); has(sk.runs[#sk.runs - 1], '"element=positions-row"')
 end)
 ok("rank search: one forced fetch per page, late answers for an old page ignored, measure disabled after", function()
   local pages = {}
@@ -331,9 +336,10 @@ ok("warning state: border, banner and a toast, once", function()
   local sk = boot({ Wallet = DEAD }, { lend = function() return lendJson(hf) end }); settle(sk); noErrors(sk)
   has(sk:option("MeterBackground", "Shape"), "245,165,36"); has(sk:text("MeterBanner"), "HF 1.38"); eq(sk:option("MeterHfVal", "FontColor"), "245,165,36,255")
   local note = readFile(sk.res .. "Notify.txt"); has(note, "FT account health low"); has(note, "normal")
-  eq(#sk.runs >= 1 and sk.runs[#sk.runs]:find("powershell.exe", 1, true) ~= nil, true, "powershell command issued")
-  has(sk.runs[#sk.runs], sk.res .. "Notify.ps1")
-  local count = function() local c = 0; for _, r in ipairs(sk.runs) do if r:find("powershell", 1, true) then c = c + 1 end end; return c end
+  local notes = function() local out = {}; for _, r in ipairs(sk.runs) do if r:find("Notify.ps1", 1, true) then out[#out + 1] = r end end; return out end
+  eq(#notes() >= 1 and notes()[1]:find("powershell.exe", 1, true) ~= nil, true, "powershell command issued")
+  has(notes()[1], sk.res .. "Notify.ps1")
+  local count = function() return #notes() end
   local before = count(); clock = clock + 60; sk:tick(60); sk:deliver(); eq(count(), before, "no repeat")
   hf = 1.28; clock = clock + 60; sk:tick(60); sk:deliver()
   has(sk:option("MeterBackground", "Shape"), "239,68,68"); has(readFile(sk.res .. "Notify.txt"), "critical")
@@ -585,6 +591,79 @@ ok("the panel fits: every meter of every tab sits above the footer", function()
   has(sk:option("MeterBackground", "Shape"), "340,424")
 end)
 
+
+-- ---------------------------------------------------------------- anonymous usage stats
+local function stats(sk)
+  local out = {}
+  for _, r in ipairs(sk.runs) do if r:find("UsageStats.ps1", 1, true) then out[#out + 1] = r end end
+  return out
+end
+local function statsNamed(sk, name)
+  local out = {}
+  for _, r in ipairs(stats(sk)) do if r:find('UsageStats.ps1" "' .. name .. '" ', 1, true) then out[#out + 1] = r end end
+  return out
+end
+ok("usage stats: a launch pageview with only platform-level values, never an address", function()
+  local sk = boot({ Wallets = W1 .. "," .. W2 .. "," .. W3 }); settle(sk); noErrors(sk)
+  local pv = statsNamed(sk, "pageview")
+  eq(#pv, 1); has(pv[1], '"1.2.0" "#PROGRAMPATH#Rainmeter.exe" "walletsConfigured=3+"')
+  has(pv[1], '"powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "')
+  -- use it: tabs, links, settings, a switch, a refresh, a wallet added and removed
+  sk:exec(sk:option("MeterTabPositions", "LeftMouseUpAction")); sk:exec(sk:option("MeterLogo", "LeftMouseUpAction"))
+  sk:exec(sk:option("MeterCog", "LeftMouseUpAction")); sk:dismissInput(); sk:exec(sk:option("MeterSwitch", "LeftMouseUpAction"))
+  sk:exec(sk:option("MeterBtnRefresh", "LeftMouseUpAction")); sk:exec(sk:option("Rainmeter", "MouseOverAction"))
+  sk:exec('[!CommandMeasure MeasureScript "SetWallets(\'' .. W1 .. "," .. W3 .. "," .. DEAD .. '\')"]')
+  noErrors(sk)
+  for _, n in ipairs({ "Tab view", "Link click", "Settings open", "Wallet switch", "Refresh", "Panel open", "Wallet added", "Wallet removed" }) do
+    eq(#statsNamed(sk, n), 1, n)
+  end
+  has(statsNamed(sk, "Tab view")[1], '"tab=positions"')
+  has(statsNamed(sk, "Link click")[1], '"element=header-logo" "url=https://flyingtulip.com/"')
+  for _, r in ipairs(stats(sk)) do
+    assert(not r:lower():find("0x%x%x%x%x%x%x%x%x"), "an address in " .. r)
+    assert(not r:find("debt", 1, true) and not r:find("hf=", 1, true), "account data in " .. r)
+  end
+  eq(sk.refreshed, 2, "the refresh button and the wallet save both refresh")
+end)
+ok("usage stats: an address inside a link URL is replaced, and a skin refresh is not a new launch", function()
+  local sk = boot({ Wallets = W1 }); settle(sk)
+  sk:exec([=[[!CommandMeasure MeasureScript "OpenLink('header-wallet','https://flyingtulip.com/trade/portfolio/?address=]=] .. W1 .. [=[')"]]=])
+  has(statsNamed(sk, "Link click")[1], '"url=https://flyingtulip.com/trade/portfolio/?address=:address"')
+  local again = boot(nil, nil, { dir = sk.dir }); settle(again)
+  eq(#statsNamed(again, "pageview"), 0, "within the hour")
+  clock = clock + 3700; local later = boot(nil, nil, { dir = sk.dir }); settle(later); eq(#statsNamed(later, "pageview"), 1)
+  clock = clock + 86400; later:tick(); eq(#statsNamed(later, "pageview"), 2, "one a day while running")
+  later:tick(5); eq(#statsNamed(later, "pageview"), 2)
+end)
+ok("usage stats: Analytics=0 sends nothing at all, whatever happens", function()
+  local sk = boot({ Wallets = W1 .. "," .. W2, Analytics = "0" }, { lend = lendBy({ [W1] = 1.2, [W2] = 1.3 }), points = false }); settle(sk)
+  sk:exec(sk:option("MeterTabMarket", "LeftMouseUpAction")); sk:exec(sk:option("MeterLogo", "LeftMouseUpAction"))
+  sk:exec(sk:option("MeterSwitch", "LeftMouseUpAction")); sk:exec(sk:option("Rainmeter", "MouseOverAction"))
+  clock = clock + 90000; sk:tick(3); settle(sk)
+  noErrors(sk); eq(#stats(sk), 0)
+  assert(#sk.runs > 0, "the page still opened")
+end)
+ok("usage stats: the Advanced switch in the right-click menu turns them off and on, kept in Settings.inc", function()
+  local sk = boot({ Wallets = W1 }); settle(sk)
+  eq(sk:option("Rainmeter", "ContextTitle7"), "Advanced: anonymous usage stats on or off")
+  sk:exec(sk:option("Rainmeter", "ContextAction7")); noErrors(sk)
+  has(readFile(sk.dir .. "/@Resources/Settings.inc"), "\nAnalytics=0\n"); has(sk:text("MeterBanner"), "are off")
+  local n = #stats(sk); sk:exec(sk:option("MeterTabMarket", "LeftMouseUpAction")); eq(#stats(sk), n)
+  sk:exec(sk:option("Rainmeter", "ContextAction7")); has(readFile(sk.dir .. "/@Resources/Settings.inc"), "\nAnalytics=1\n")
+  sk:exec(sk:option("MeterTabMarket", "LeftMouseUpAction")); eq(#stats(sk), n + 1)
+end)
+ok("usage stats: HF alert level, fetch errors once an hour per endpoint, panel opens once per 30 minutes, 30 per hour cap", function()
+  local sk = boot({ Wallets = W1 }, { lend = lendJson(1.28), points = false }); settle(sk)
+  has(statsNamed(sk, "HF alert shown")[1], '"level=danger"')
+  eq(#statsNamed(sk, "Fetch error"), 1, "points failed")
+  has(table.concat(statsNamed(sk, "Fetch error")), '"endpoint=points"')
+  clock = clock + 120; sk:tick(120); sk:deliver(); eq(#statsNamed(sk, "Fetch error"), 1, "deduped inside the hour")
+  for _ = 1, 3 do sk:exec(sk:option("Rainmeter", "MouseOverAction")) end; eq(#statsNamed(sk, "Panel open"), 1)
+  clock = clock + 1801; sk:exec(sk:option("Rainmeter", "MouseOverAction")); eq(#statsNamed(sk, "Panel open"), 2)
+  for _ = 1, 40 do sk:exec(sk:option("MeterTabMarket", "LeftMouseUpAction")) end
+  eq(#statsNamed(sk, "Tab view"), 30, "capped per hour")
+  clock = clock + 3600; sk:exec(sk:option("MeterTabMarket", "LeftMouseUpAction")); eq(#statsNamed(sk, "Tab view"), 31)
+end)
 os.execute("rm -rf " .. TMP)
 print("\n" .. passed .. " passed, " .. failed .. " failed")
 if failed > 0 then os.exit(1) end

@@ -599,10 +599,59 @@ local function setText(meter, text, color)
 end
 -- hover text (an empty value removes the option, so no stale tooltip stays behind)
 local function tip(meter, text) set(meter, "ToolTipText", clean(text)) end
-local function link(meter, url) set(meter, "LeftMouseUpAction", '["' .. url .. '"]') end
 local function dim(color) return (color:gsub(",%d+$", ",120")) end
 
 local function now() return os.time() end
+
+-- ---------------------------------------------------------------- anonymous usage stats (Plausible), see the README
+-- Only the event name, the platform, the skin version and the few values below (tab, element, url, level, endpoint,
+-- a wallet count bucket) are sent, by @Resources\UsageStats.ps1 in a hidden PowerShell, fire and forget. Never a
+-- wallet address, balance or position; any 0x address that slips into a value is replaced by ":address" here and
+-- again in the script. Nothing is sent while Analytics=0. Each event name is capped at 30 per hour.
+local SKIN_VERSION = "1.2.0"
+local STAT_CAP = 30
+local usage = { hour = -1, counts = {}, errAt = {}, openAt = -1e18, pageAt = -1e18 }
+local ADDRESS = "0x" .. string.rep("%x", 40)
+local function statValue(v)
+  return (tostring(v):gsub(ADDRESS, ":address"):gsub('[#"%[%]\r\n]', ""))
+end
+local function sendStat(name, props)
+  if not (cfg and cfg.analytics) then return false end
+  local h = math.floor(now() / 3600)
+  if h ~= usage.hour then usage.hour, usage.counts = h, {} end
+  local c = usage.counts[name] or 0
+  if c >= STAT_CAP then return false end
+  usage.counts[name] = c + 1
+  local args = { '"' .. statValue(name) .. '"', '"' .. SKIN_VERSION .. '"', '"#PROGRAMPATH#Rainmeter.exe"' }
+  for _, kv in ipairs(props or {}) do args[#args + 1] = '"' .. kv[1] .. "=" .. statValue(kv[2]) .. '"' end
+  SK:Bang('["powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "#@#UsageStats.ps1" ' ..
+    table.concat(args, " ") .. ']')
+  return true
+end
+local function walletsBucket(n) return n >= 3 and "3+" or tostring(n) end
+-- the launch pageview (at most once an hour, so refreshing the skin is not a launch) and one a day while it runs
+local function pageview()
+  if sendStat("pageview", { { "walletsConfigured", walletsBucket(#cfg.wallets) } }) then
+    usage.pageAt = now()
+    writeFile(resource("UsageStats.txt"), string.format("pageview=%d\n", usage.pageAt))
+  end
+end
+-- a failed or unusable answer, at most once an hour per endpoint
+local ENDPOINT = { price = "ticker", fees = "fees", feesSeries = "fees", klines = "klines", lend = "lend", lend143 = "lend",
+  watch = "lend", watch143 = "lend", sum146 = "summary", sum1 = "summary", sum56 = "summary", sum143 = "summary",
+  rewards = "rewards", points = "points", rank = "leaderboard", pos146 = "positions", pos1 = "positions",
+  pos56 = "positions", puts = "ftput" }
+local function fetchError(key)
+  local ep = ENDPOINT[key]
+  if not ep or key == "sum143" or key == "lend143" or key == "watch143" then return end -- Monad is not served everywhere yet
+  if now() - (usage.errAt[ep] or -1e18) < 3600 then return end
+  usage.errAt[ep] = now()
+  sendStat("Fetch error", { { "endpoint", ep } })
+end
+-- Every element that opens flyingtulip.com calls OpenLink(element, url): the click is counted, then the page opens.
+local function link(meter, url, element)
+  set(meter, "LeftMouseUpAction", string.format([=[[!CommandMeasure MeasureScript "OpenLink('%s','%s')"]]=], element, url))
+end
 
 -- Wallet list: "0xA, 0xB" (commas, spaces, semicolons or new lines). Returns the valid wallets (lowercase, no
 -- duplicates, in order) and the entries that are not addresses.
@@ -643,6 +692,7 @@ local function buildConfig()
     notify = tostring(SK:GetVariable("Notifications") or "1") ~= "0",
     priceChain = (tonumber(SK:GetVariable("PriceChainId")) == 146) and 146 or 1,
     refresh = math.max(15, ref),
+    analytics = tostring(SK:GetVariable("Analytics") or "1") ~= "0",
     rotate = math.max(10, rot)
   }
 end
@@ -852,7 +902,8 @@ function M.render()
 
   -- market: the FT price meters open the FT-ftUSD spot page on the chain being shown
   local mkt = marketUrl("FT-ftUSD", cfg.priceChain)
-  for _, m in ipairs({ "MeterPriceLbl", "MeterPriceVal", "MeterPriceChartLabel", "MeterPriceChart" }) do link(m, mkt) end
+  link("MeterPriceLbl", mkt, "market-ft-price"); link("MeterPriceVal", mkt, "market-ft-price")
+  link("MeterPriceChartLabel", mkt, "market-price-chart"); link("MeterPriceChart", mkt, "market-price-chart")
   if S.price then
     local ch = S.price.changePct24h
     local c = stale("price") and dim(deltaColor(ch)) or deltaColor(ch)
@@ -907,6 +958,7 @@ function M.render()
         if row < 4 and (c.hf or (c.debtUsd or 0) > 0 or (c.equityUsd or 0) > 0) then
           row = row + 1
           local eqText = c.equityUsd and ("  equity " .. fmtUsd(c.equityUsd)) or ""
+          link("MeterHfC" .. row, SITE .. "lend/dashboard/", "account-hf-" .. tostring(c.name):lower():gsub("[^%w]+", "-"))
           setText("MeterHfC" .. row, c.hf and string.format("%-9s HF %s  debt %s%s", c.name, fmtHf(c.hf), fmtUsd(c.debtUsd or 0), eqText)
             or string.format("%-9s no debt%s", c.name, eqText), C_SUB)
         end
@@ -950,10 +1002,10 @@ function M.render()
         if p then
           local lev = (p.leverage and p.leverage > 0) and string.format(p.leverage >= 10 and " %.0fx" or " %.1fx", p.leverage) or ""
           setText("MeterPos" .. i, string.format("%s %s%s  %s  %s", p.symbol, p.side, lev, p.network, fmtSignedUsd(p.pnlUsd)), deltaColor(p.pnlUsd))
-          link("MeterPos" .. i, marketUrl(p.market, p.chainId))
-        else setText("MeterPos" .. i, ""); link("MeterPos" .. i, PORTFOLIO_URL) end
+          link("MeterPos" .. i, marketUrl(p.market, p.chainId), "positions-row")
+        else setText("MeterPos" .. i, ""); link("MeterPos" .. i, PORTFOLIO_URL, "positions-row") end
       end
-      if #pos > POS_ROWS then setText("MeterPos" .. POS_ROWS, string.format("+%d more (see portfolio)", #pos - POS_ROWS + 1), C_FAINT); link("MeterPos" .. POS_ROWS, PORTFOLIO_URL) end
+      if #pos > POS_ROWS then setText("MeterPos" .. POS_ROWS, string.format("+%d more (see portfolio)", #pos - POS_ROWS + 1), C_FAINT); link("MeterPos" .. POS_ROWS, PORTFOLIO_URL, "positions-more") end
     else
       setText("MeterPosHead", "Positions: unavailable", C_FAINT)
       for i = 1, POS_ROWS do setText("MeterPos" .. i, "") end
@@ -969,6 +1021,7 @@ function ShowTab(name)
     if not validTab(name) or not S then return end
     S.tab = name
     SK:Bang("!WriteKeyValue", "Variables", "Tab", name, "#@#Settings.inc")
+    sendStat("Tab view", { { "tab", name } })
     M.render()
   end)
 end
@@ -1043,6 +1096,7 @@ local function evaluateAlertsFor(w, list)
     n.wallet = shortAddr(w)
     local title, body, level = notifyText(n)
     notifyDesktop(title, body, level)
+    sendStat("HF alert shown", { { "level", n.level == 2 and "danger" or "warning" } })
   end
   -- a wallet that just turned low is shown at once, and stays shown while it is low (see Update)
   if st.level > prev and w ~= S.cur then switchTo(w) end
@@ -1231,6 +1285,7 @@ function M.ingest(key, body)
   if key == "puts" then
     S.puts = v                                          -- nil is a valid answer: the wallet has no PUTs
   elseif v == nil then
+    fetchError(key)
     return                                              -- unusable payload: keep the last good value, it dims when stale
   else
     S[key] = v
@@ -1274,8 +1329,9 @@ function OnError(key)
   -- keep the last value; it is dimmed and flagged stale once older than 3 refresh intervals
   guard("OnError(" .. tostring(key) .. ")", function()
     if not S then return end
-    if key == "watch" or key == "watch143" then watchIngest(key, nil); return end
+    if key == "watch" or key == "watch143" then fetchError(key); watchIngest(key, nil); return end
     S.err[key] = now()
+    fetchError(key)
     if key == "rank" and rank.active then rankStop() end
     M.render()
   end)
@@ -1297,6 +1353,12 @@ local function writeBackup(list)
   if p then writeFile(p, table.concat(list, "\n") .. "\n") end
 end
 local function saveWallets(list)
+  local was, now_ = {}, {}
+  for _, w in ipairs(cfg.wallets) do was[w] = true end
+  for _, w in ipairs(list) do now_[w] = true; if not was[w] then was.added = true end end
+  for _, w in ipairs(cfg.wallets) do if not now_[w] then was.removed = true end end
+  if was.added then sendStat("Wallet added") end
+  if was.removed then sendStat("Wallet removed") end
   -- the file path is left as #@# for Rainmeter to expand, so a non-ASCII profile path still works
   SK:Bang("!WriteKeyValue", "Variables", "Wallets", table.concat(list, ", "), "#@#Settings.inc")
   SK:Bang("!WriteKeyValue", "Variables", "Wallet", list[1] or "", "#@#Settings.inc")
@@ -1339,7 +1401,7 @@ end
 
 function NextWallet()
   guard("NextWallet", function()
-    if #cfg.wallets > 1 then switchTo(nextWallet()) end
+    if #cfg.wallets > 1 then switchTo(nextWallet()); sendStat("Wallet switch") end
   end)
 end
 
@@ -1347,11 +1409,44 @@ end
 function OpenWallets(batch)
   guard("OpenWallets", function()
     local add = tonumber(batch) == 2
+    sendStat("Settings open")
     SK:Bang("!SetVariable", "Wallets", table.concat(cfg.wallets, ", "))
     SK:Bang("!UpdateMeasure", "MeasureInput")
     banner(add and "Paste a wallet (0x...) to add and press Enter"
       or "Wallets, comma separated. Enter saves. Right-click the skin for more", C_TULIP300)
     SK:Bang("!CommandMeasure", "MeasureInput", "ExecuteBatch " .. (add and "2" or "1"))
+  end)
+end
+
+-- every element that opens flyingtulip.com: count the click (element id, the URL without any address), open the page
+function OpenLink(element, url)
+  guard("OpenLink", function()
+    url = tostring(url or "")
+    if not url:match("^https://flyingtulip%.com/") then return end
+    sendStat("Link click", { { "element", element }, { "url", url } })
+    SK:Bang('["' .. url .. '"]')
+  end)
+end
+-- the mouse came over the skin: counted as opening it, at most once per 30 minutes
+function PanelOpen()
+  guard("PanelOpen", function()
+    if now() - usage.openAt < 1800 then return end
+    usage.openAt = now()
+    sendStat("Panel open")
+  end)
+end
+function ManualRefresh()
+  guard("ManualRefresh", function()
+    sendStat("Refresh")
+    SK:Bang("!Refresh")
+  end)
+end
+-- Advanced: anonymous usage stats on or off (Settings.inc Analytics=1 or 0)
+function ToggleAnalytics()
+  guard("ToggleAnalytics", function()
+    cfg.analytics = not cfg.analytics
+    SK:Bang("!WriteKeyValue", "Variables", "Analytics", cfg.analytics and "1" or "0", "#@#Settings.inc")
+    banner(cfg.analytics and "Anonymous usage stats are on" or "Anonymous usage stats are off", C_TULIP300)
   end)
 end
 
@@ -1380,6 +1475,11 @@ function Initialize()
     S = { ts = {}, err = {}, startedAt = now(), lendRate = cfg.refresh, w = {}, cur = cfg.wallet, shownAt = now(), tab = tab }
     rank = { active = false }
     watch = { active = false, last = 0 }
+    -- the launch pageview, unless one was sent less than an hour ago (a skin refresh is not a launch)
+    usage = { hour = -1, counts = {}, errAt = {}, openAt = -1e18, pageAt = -1e18 }
+    local up = tonumber((readFile(resource("UsageStats.txt")) or ""):match("pageview=(%d+)") or "")
+    if up then usage.pageAt = up end
+    if now() - usage.pageAt >= 3600 then pageview() end
     local states = loadAlertStates()
     for _, w in ipairs(cfg.wallets) do
       local a = states[w]
@@ -1414,6 +1514,7 @@ function Update()
       switchTo(pin or nextWallet())
     end
     watchStep()
+    if now() - usage.pageAt >= 86400 then pageview() end
     if ticks % 30 == 0 then M.render() end -- ages the "updated" label and dims stale values
   end)
   return 0

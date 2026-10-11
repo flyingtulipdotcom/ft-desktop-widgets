@@ -1,7 +1,7 @@
-; Flying Tulip settings. Use the cog on the skin (or right-click the skin > Wallets and settings) for the wallets,
+; Flying Tulip settings. Advanced settings are at the end. Use the cog on the skin (or right-click the skin > Wallets and settings) for the wallets,
 ; or edit this file (right-click > Edit the settings file). Rainmeter keeps these values when a newer version is installed.
 [Variables]
-; Public wallet addresses to track, comma separated (0x + 40 hex characters each). Empty: market data only.
+; Public wallet addresses to show, comma separated (0x + 40 hex characters each). Empty: market data only.
 ; With more than one, the skin shows them in turn (see RotateSeconds) and the switch icon next to the address
 ; jumps to the next one. A wallet whose health factor is low is shown at once and stays shown while it is low.
 Wallets=
@@ -23,3 +23,7 @@ PriceChainId=1
 RefreshSeconds=60
 ; Last tab shown: market, account or positions (the skin writes it when you click a tab).
 Tab=
+; ---- Advanced settings
+; 1 sends anonymous usage stats (platform, version, Windows and Rainmeter version, which tab or link was used). Never a
+; wallet, balance or position. 0 turns them off (also right-click the skin > Advanced: anonymous usage stats).
+Analytics=1

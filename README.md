@@ -27,6 +27,13 @@ The widgets only read data for the public address you give them and never send t
 
 On Linux, see the [Omarchy bar plugin](https://github.com/flyingtulipdotcom/omarchy-ft-bar).
 
+## Anonymous usage stats
+
+The widgets send a few anonymous events (launches, panel opens, tabs and links used, failed API calls) to Plausible,
+with the platform and the widget version. No wallet address, balance, position or other account data is ever sent.
+Each widget has an "Anonymous usage stats" switch under its Advanced settings; the full list of events is in
+[rainmeter/README.md](rainmeter/README.md#anonymous-usage-stats) and [xbar/README.md](xbar/README.md#anonymous-usage-stats).
+
 ## Disclaimer
 
 Informational only. This is not financial advice and not a substitute for monitoring your positions yourself.

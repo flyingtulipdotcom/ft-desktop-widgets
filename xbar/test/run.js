@@ -104,7 +104,7 @@ function world(opts) {
     [/positions/, []],
     [/ftPUT/, { data: { positions: [{ nft_id: "7", token_symbol: "USDT", token_decimals: 6, strike: "99960146", current_capital: "1000000000", current_ft: "9996014600000000000000", withdrawn_ft: "0" }] } }]
   ]
-  const files = {}, notes = [], calls = []
+  const files = {}, notes = [], calls = [], posts = [], opened = []
   const io = {
     fetchAll(urls) {
       calls.push(urls.slice())
@@ -115,12 +115,13 @@ function world(opts) {
       })
     },
     readFile: p => (p in files ? files[p] : null), writeFile: (p, t) => { files[p] = t },
-    notify: (t, b, u) => notes.push({ t, b, u }), prompt: () => opts.prompt, alert: m => notes.push({ alert: m })
+    notify: (t, b, u) => notes.push({ t, b, u }), prompt: () => opts.prompt, alert: m => notes.push({ alert: m }),
+    post: lists => { for (const l of lists) posts.push(l) }, osVersion: () => "15.1", openUrl: u => opened.push(u)
   }
-  return { io, files, notes, calls }
+  return { io, files, notes, calls, posts, opened }
 }
 const args = (o) => Object.assign({ cmd: "run", wallet: "", hfWarn: "1.40", hfCritical: "1.30", notify: "true", cooldownMin: "30", priceChain: "1",
-  stateDir: "/s", walletFile: "/w/wallet", self: "/p/flyingtulip.1m.sh" }, o)
+  stateDir: "/s", walletFile: "/w/wallet", self: "/p/flyingtulip.1m.sh", analytics: "false" }, o)
 const NOW = Date.parse("2026-10-10T17:00:00Z")
 
 ok("no wallet: market only, valid format, no account calls", () => {
@@ -174,7 +175,7 @@ ok("FT earned and points rows say what they cover, with the breakdown in the sub
     assert(out.includes(s), "missing: " + s + "\n" + out)
 })
 ok("every dropdown line links to a real flyingtulip.com page", () => {
-  const w = world(), out = M.main(w.io, args({ wallet: DEAD }), NOW), lines = out.split("\n").slice(1).filter(l => !/^-+$/.test(l))
+  const w = world(), out = M.main(w.io, args({ wallet: DEAD }), NOW), lines = out.split("\n").slice(1).filter(l => !/^-+$/.test(l) && !/^(--)?(Settings|Advanced) \|/.test(l))
   for (const l of lines) assert(/ (href|shell|refresh)=/.test(l.replace(/^[^|]*\|/, " ")), "no link: " + l)
   const href = l => (l.match(/href=(\S+)/) || [])[1]
   const find = s => lines.find(l => l.includes(s))
@@ -208,7 +209,7 @@ ok("notifications: warn once, critical on the next crossing, nothing inside the 
   out = M.main(w2.io, args({ wallet: DEAD }), NOW + 120e3)
   assert.equal(w2.notes.length, 1); assert.equal(w2.notes[0].u, "critical"); assert(out.split("\n")[0].includes("#e5484d"))
 })
-ok("notifications off: no osascript notification, state still tracked", () => {
+ok("notifications off: no osascript notification, state still kept", () => {
   const w = world({ hf: 1.2 }); M.main(w.io, args({ wallet: DEAD, notify: "false" }), NOW); assert.equal(w.notes.length, 0)
 })
 ok("api failure falls back to the last good values and flags them stale", () => {
@@ -342,6 +343,62 @@ ok("dropdown: three submenus (Market, Account, Positions) and nothing else long 
   assert(top.length <= 10, top.length + " top-level lines:\n" + top.join("\n"))
 })
 
+// ---- anonymous usage stats ----
+const ev = w => w.posts.map(a => ({ args: a, body: JSON.parse(a[a.indexOf("-d") + 1]) }))
+const named = (w, n) => ev(w).filter(e => e.body.name === n)
+const S = o => args(Object.assign({ analytics: "true" }, o))
+ok("usage stats: one pageview a day with platform-level values only, browser-like user agent, Plausible's API", () => {
+  const w = world(); M.main(w.io, S({ wallet: W1 + "," + W2 }), NOW)
+  const pv = named(w, "pageview"); assert.equal(pv.length, 1)
+  assert.deepEqual(pv[0].body, { name: "pageview", url: "app://widget/macos", domain: "widget",
+    props: { platform: "macos", version: M.WIDGET_VERSION, os: "macOS 15", host: "xbar", walletsConfigured: "2" } })
+  const a = pv[0].args
+  assert.equal(a[0], "/usr/bin/curl"); assert(a.includes("https://plausible.io/api/event")); assert.equal(a[a.indexOf("-m") + 1], "10")
+  assert(/^Mozilla\/5\.0 \(Macintosh; Intel Mac OS X 10_15_7\) FlyingTulipWidget\/\d/.test(a[a.indexOf("-A") + 1]))
+  M.main(w.io, S({ wallet: W1 + "," + W2 }), NOW + 3600e3); assert.equal(named(w, "pageview").length, 1, "once a day")
+  M.main(w.io, S({ wallet: W1 + "," + W2 }), NOW + 25 * 3600e3); assert.equal(named(w, "pageview").length, 2)
+  for (const e of ev(w)) assert(!/0x[0-9a-f]{40}/i.test(JSON.stringify(e.args)), "address sent: " + JSON.stringify(e.body))
+})
+ok("usage stats: every link runs the plugin with its element id; the click is counted (address removed), then the page opens", () => {
+  const w = world(), out = M.main(w.io, S({ wallet: DEAD }), NOW)
+  assert.deepEqual(validate(out), []); assert(!/ href=/.test(out.split("\n").slice(1).join("\n")), "no plain href while stats are on")
+  const ids = [...out.matchAll(/param1=open param2=([a-z0-9-]+) param3=(\S+)/g)].map(m => m[1])
+  for (const id of ["header-title", "header-open-site", "market-ft-price", "market-fees", "market-fees-chart", "market-price-chart", "market-header",
+    "account-hf", "account-hf-sonic", "account-pnl", "account-ft-earned", "account-points", "account-ftput", "account-header", "positions-row", "positions-header", "footer-disclaimer"])
+    assert(ids.includes(id), "missing element " + id)
+  M.main(w.io, S({ cmd: "open", arg: "account-pnl", arg2: "https://flyingtulip.com/trade/portfolio/?a=" + DEAD }), NOW)
+  const lc = named(w, "Link click"); assert.equal(lc.length, 1)
+  assert.deepEqual(lc[0].body.props, { platform: "macos", version: M.WIDGET_VERSION, element: "account-pnl", url: "https://flyingtulip.com/trade/portfolio/?a=:address" })
+  assert.deepEqual(w.opened, ["https://flyingtulip.com/trade/portfolio/?a=" + DEAD], "the real page still opens")
+  M.main(w.io, S({ cmd: "open", arg: "x", arg2: "https://evil.example/" }), NOW); assert.equal(w.opened.length, 1, "only flyingtulip.com")
+})
+ok("usage stats: switch, refresh, settings, wallet added and removed, HF alert, fetch errors once an hour, 30 per hour cap", () => {
+  const w = world({ hf: 1.28, prompt: W2 }), A = o => S(Object.assign({}, o))
+  M.main(w.io, A({ cmd: "add" }), NOW); M.main(w.io, A({}), NOW); M.main(w.io, A({ cmd: "next" }), NOW + 1e3)
+  M.main(w.io, A({ cmd: "refresh" }), NOW + 2e3); M.main(w.io, A({ cmd: "remove", arg: W2 }), NOW + 3e3)
+  for (const n of ["Settings open", "Wallet added", "Wallet switch", "Refresh", "Wallet removed"]) assert.equal(named(w, n).length, 1, n)
+  assert.deepEqual(named(w, "HF alert shown")[0].body.props.level, "danger")
+  const w2 = world({ fail: ["/points?walletAddress"] })
+  M.main(w2.io, S({ wallet: DEAD }), NOW); M.main(w2.io, S({ wallet: DEAD }), NOW + 60e3)
+  assert.equal(named(w2, "Fetch error").length, 1); assert.equal(named(w2, "Fetch error")[0].body.props.endpoint, "points")
+  M.main(w2.io, S({ wallet: DEAD }), NOW + 3700e3); assert.equal(named(w2, "Fetch error").length, 2)
+  const w3 = world(); for (let i = 0; i < 40; i++) M.main(w3.io, S({ cmd: "open", arg: "header-title", arg2: "https://flyingtulip.com/" }), NOW + i)
+  assert.equal(named(w3, "Link click").length, 30); assert.equal(w3.opened.length, 40, "pages open regardless of the cap")
+})
+ok("usage stats off (VAR_ANALYTICS=false, or the Advanced switch): nothing is sent, links are plain", () => {
+  for (const mk of [() => ({ w: world({ prompt: W2 }), a: o => args(o) }), () => { const w = world({ prompt: W2 }); M.main(w.io, S({ cmd: "stats" }), NOW); return { w, a: o => S(o) } }]) {
+    const { w, a } = mk()
+    let out = M.main(w.io, a({ wallet: DEAD }), NOW)
+    assert(out.includes("href=https://flyingtulip.com/statistics/"))
+    M.main(w.io, a({ cmd: "open", arg: "header-title", arg2: "https://flyingtulip.com/" }), NOW); M.main(w.io, a({ cmd: "add" }), NOW)
+    M.main(w.io, a({ cmd: "next" }), NOW); M.main(w.io, a({ cmd: "refresh" }), NOW)
+    assert.equal(w.posts.length, 0); assert.equal(w.opened.length, 1)
+  }
+  const w = world(); M.main(w.io, S({ cmd: "stats" }), NOW); let out = M.main(w.io, S({}), NOW)
+  assert(/^----Anonymous usage stats: off \(click to turn on\) \|.*param1=stats/m.test(out), "Settings > Advanced shows the switch")
+  M.main(w.io, S({ cmd: "stats" }), NOW); out = M.main(w.io, S({}), NOW + 1)
+  assert(/^----Anonymous usage stats: on \(click to turn off\)/m.test(out)); assert.equal(named(w, "pageview").length, 1)
+})
 // ---- the plugin file itself ----
 ok("plugin file: executable, bash shebang, required xbar metadata, refresh in filename, bash -n", () => {
   const { PLUGIN } = require("./load"), src = fs.readFileSync(PLUGIN, "utf8")
@@ -349,7 +406,7 @@ ok("plugin file: executable, bash shebang, required xbar metadata, refresh in fi
   for (const t of ["xbar.title", "xbar.version", "xbar.author", "xbar.author.github", "xbar.desc", "xbar.dependencies", "xbar.abouturl"])
     assert(new RegExp("<" + t + ">[^<]+</" + t + ">").test(src), t)
   const vars = [...src.matchAll(/<xbar\.var>(string|number|boolean|select)\((VAR_[A-Z_]+)=("[^"]*"|[^)]*)\): .+<\/xbar\.var>/g)]
-  assert.equal(vars.length, 6); assert(src.includes("<swiftbar.environment>"))
+  assert.equal(vars.length, 7); assert(src.includes("<swiftbar.environment>"))
   for (const v of vars) assert(src.includes("${" + v[2] + ":-"), v[2] + " is not passed to the script")
   cp.execFileSync("bash", ["-n", PLUGIN])
   assert(!/dev\.|opbalance|api\.galaxy|0x[0-9a-fA-F]{40}/.test(src.replace(/\$\{[^}]*\}/g, "")), "scrub")

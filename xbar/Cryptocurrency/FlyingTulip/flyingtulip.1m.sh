@@ -6,7 +6,7 @@
 #
 # Metadata (xbar):
 #  <xbar.title>Flying Tulip</xbar.title>
-#  <xbar.version>v1.1.0</xbar.version>
+#  <xbar.version>v1.2.0</xbar.version>
 #  <xbar.author>Flying Tulip</xbar.author>
 #  <xbar.author.github>flyingtulipdotcom</xbar.author.github>
 #  <xbar.desc>FT market price, 24h application fees and, for optional wallets (shown in turn), health factor with liquidation alerts, PnL, FT earned, points, ftPUT gain and positions. Public API only.</xbar.desc>
@@ -14,15 +14,16 @@
 #  <xbar.abouturl>https://github.com/flyingtulipdotcom/ft-desktop-widgets</xbar.abouturl>
 #
 # Settings (shown in the plugin settings window of xbar and SwiftBar):
-#  <xbar.var>string(VAR_WALLET=""): Public wallet addresses to track (0x...), comma separated. Leave empty to set them from the menu.</xbar.var>
+#  <xbar.var>string(VAR_WALLET=""): Public wallet addresses to show (0x...), comma separated. Leave empty to set them from the menu.</xbar.var>
 #  <xbar.var>string(VAR_HF_WARN="1.40"): Warning notification at or below this health factor.</xbar.var>
 #  <xbar.var>string(VAR_HF_CRITICAL="1.30"): Critical notification at or below this health factor (liquidation starts below 1.25).</xbar.var>
 #  <xbar.var>boolean(VAR_NOTIFICATIONS=true): Show a macOS notification when health factor crosses a threshold.</xbar.var>
 #  <xbar.var>number(VAR_NOTIFY_COOLDOWN_MIN=30): Minimum minutes between two notifications of the same level.</xbar.var>
 #  <xbar.var>select(VAR_PRICE_CHAIN="1"): Chain whose FT-ftUSD market price is shown. [1, 146]</xbar.var>
+#  <xbar.var>boolean(VAR_ANALYTICS=true): Advanced: send anonymous usage stats (no wallet or account data, see the README).</xbar.var>
 #
 # Metadata (SwiftBar):
-#  <swiftbar.environment>[VAR_WALLET:, VAR_HF_WARN:1.40, VAR_HF_CRITICAL:1.30, VAR_NOTIFICATIONS:true, VAR_NOTIFY_COOLDOWN_MIN:30, VAR_PRICE_CHAIN:1]</swiftbar.environment>
+#  <swiftbar.environment>[VAR_WALLET:, VAR_HF_WARN:1.40, VAR_HF_CRITICAL:1.30, VAR_NOTIFICATIONS:true, VAR_NOTIFY_COOLDOWN_MIN:30, VAR_PRICE_CHAIN:1, VAR_ANALYTICS:true]</swiftbar.environment>
 #  <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
 #  <swiftbar.hideSwiftBar>true</swiftbar.hideSwiftBar>
 #
@@ -653,7 +654,7 @@ function loadSources(io, specs, cache, nowMs) {
     for (j = 0; j < specs[i].urls.length; j++) urls.push(specs[i].urls[j]);
   }
   var bodies = urls.length ? io.fetchAll(urls) : [], pos = 0;
-  var fetched = {};
+  var fetched = {}, failed = [];
   for (i = 0; i < need.length; i++) {
     var bs = [];
     for (j = 0; j < need[i].urls.length; j++) {
@@ -663,6 +664,7 @@ function loadSources(io, specs, cache, nowMs) {
     var v = FAIL;
     try { v = need[i].parse(bs); } catch (e) { v = FAIL; }
     if (v !== FAIL) { (need[i].store || cache)[need[i].key] = { t: nowMs, v: v }; fetched[need[i].id || need[i].key] = true; }
+    else failed.push(need[i].id || need[i].key);
   }
   var data = {}, age = {};
   for (i = 0; i < specs.length; i++) {
@@ -670,7 +672,7 @@ function loadSources(io, specs, cache, nowMs) {
     var e = cache[specs[i].key];
     if (e) { data[specs[i].key] = e.v; age[specs[i].key] = Math.round((nowMs - e.t) / 1000); }
   }
-  return { data: data, age: age, fetched: fetched };
+  return { data: data, age: age, fetched: fetched, failed: failed };
 }
 
 // Leaderboard is sorted by points (500 per page): binary-search the page, then find the wallet.
@@ -726,8 +728,21 @@ function saveState(io, path, s) { io.writeFile(path, JSON.stringify(s, stateRepl
 // ---- rendering -----------------------------------------------------------------------------------
 
 function clean(t) { return String(t).replace(/[|\r\n]+/g, " "); }
+// While usage stats are on, a link (href plus its element id el) runs this plugin with "open <element> <url>": the
+// click is counted, then the page opens. Off, it is a plain href.
+var LINKS = { self: "", on: false };
+function linkParams(url, el) {
+  if (LINKS.on && LINKS.self && el) return { shell: LINKS.self, param1: "open", param2: el, param3: url, terminal: false };
+  return { href: url };
+}
 function line(text, params) {
   var out = clean(text), ps = params || {};
+  if (ps.href && ps.el) {
+    var lp = linkParams(ps.href, ps.el), cp = {};
+    for (var pk in ps) if (pk !== "href" && pk !== "el") cp[pk] = ps[pk];
+    for (var lk in lp) cp[lk] = lp[lk];
+    ps = cp;
+  } else if (ps.el) { var cp2 = {}; for (var pk2 in ps) if (pk2 !== "el") cp2[pk2] = ps[pk2]; ps = cp2; }
   var parts = [];
   for (var k in ps) {
     if (ps[k] === undefined || ps[k] === null) continue;
@@ -736,11 +751,12 @@ function line(text, params) {
   }
   return parts.length ? out + " | " + parts.join(" ") : out;
 }
-// Give every line from index `from` on a link to `url`, unless it already has a link or an action.
-function linkFrom(L, from, url) {
+// Give every line from index `from` on a link to `url` (element id `el`), unless it already has a link or an action.
+function linkFrom(L, from, url, el) {
+  var lp = line("", linkParams(url, el)).replace(/^ \| /, "");
   for (var i = from; i < L.length; i++) {
     if (L[i] === "---" || /(^| )(href|shell|bash|refresh)=/.test(L[i].replace(/^[^|]*\|/, " "))) continue;
-    L[i] += (L[i].indexOf(" | ") < 0 ? " | " : " ") + "href=" + url;
+    L[i] += (L[i].indexOf(" | ") < 0 ? " | " : " ") + lp;
   }
 }
 function padR(s, n) { s = String(s); while (s.length < n) s += " "; return s; }
@@ -750,7 +766,7 @@ function mono(extra) {
   return o;
 }
 function row(label, value, extra) { return line(padR(label, 12) + value, mono(extra)); }
-function head(text, url) { return line(text, { color: C_FAINT, size: 10, href: url || SITE }); }
+function head(text, url, el) { return line(text, { color: C_FAINT, size: 10, href: url || SITE, el: el }); }
 function deltaColor(v) { return !isFinite(v) || Math.abs(v) < 0.005 ? undefined : (v > 0 ? C_GREEN : C_RED); }
 function ageText(sec) { return sec < 90 ? sec + "s" : (sec < 5400 ? Math.round(sec / 60) + "m" : Math.round(sec / 3600) + "h"); }
 
@@ -795,12 +811,12 @@ function render(d, age, cfg, nowMs, selfPath) {
     L.push(line("FT offline", { image: LOGO_B64, color: C_FAINT }));
   } else L.push(titleLine(d, age, cfg, v));
   L.push("---");
-  L.push(line("Flying Tulip", { color: C_TULIP, size: 14, href: SITE }));
-  L.push(line("Open flyingtulip.com", { href: SITE }));
-  L.push(line("Refresh now", { refresh: true }));
+  L.push(line("Flying Tulip", { color: C_TULIP, size: 14, href: SITE, el: "header-title" }));
+  L.push(line("Open flyingtulip.com", { href: SITE, el: "header-open-site" }));
+  L.push(line("Refresh now", selfPath ? act("refresh") : { refresh: true }));
   if (n > 1 && selfPath) {
     L.push("---");
-    L.push(line("Showing " + shortAddr(cfg.wallet) + "  (" + (cfg.wallets.indexOf(cfg.wallet) + 1) + " of " + n + ")", { size: 11, color: C_FAINT, href: PAGES.portfolio }));
+    L.push(line("Showing " + shortAddr(cfg.wallet) + "  (" + (cfg.wallets.indexOf(cfg.wallet) + 1) + " of " + n + ")", { size: 11, color: C_FAINT, href: PAGES.portfolio, el: "header-wallet" }));
     L.push(line("Next wallet ⇄", act("next")));
   }
   L.push("---");
@@ -812,7 +828,7 @@ function render(d, age, cfg, nowMs, selfPath) {
     M.push(line("FT-ftUSD market price (the traded mark, not the NAV used for accounting)", { size: 11 }));
     if (d.price.sampledAt) M.push(line("sampled " + d.price.sampledAt, { size: 11, color: C_FAINT }));
   } else M.push(row("FT price", "— unavailable"));
-  linkFrom(M, mk0, mkt);
+  linkFrom(M, mk0, mkt, "market-ft-price");
   M.push("---");
   mk0 = M.length;
   if (d.fees) {
@@ -825,23 +841,23 @@ function render(d, age, cfg, nowMs, selfPath) {
   if (d.feesSeries && d.feesSeries.length > 1) {
     var fv = d.feesSeries.map(function (x) { return x.total; });
     M.push(line("Fees, last " + fv.length + " days (today so far in light purple)", { size: 10, color: C_FAINT }));
-    M.push(line(" ", { image: barChartPng(fv), href: PAGES.fees }));
+    M.push(line(" ", { image: barChartPng(fv), href: PAGES.fees, el: "market-fees-chart" }));
   }
-  linkFrom(M, mk0, PAGES.fees);
+  linkFrom(M, mk0, PAGES.fees, "market-fees");
   mk0 = M.length;
   if (d.klines && d.klines.length > 1) {
     var kv = d.klines.map(function (x) { return x.close; });
     M.push(line("FT market price, last " + kv.length + " days", { size: 10, color: C_FAINT }));
-    M.push(line(" ", { image: lineChartPng(kv), href: mkt }));
+    M.push(line(" ", { image: lineChartPng(kv), href: mkt, el: "market-price-chart" }));
   }
-  linkFrom(M, mk0, mkt);
+  linkFrom(M, mk0, mkt, "market-price-chart");
   submenu(L, line("Market     " + (d.price ? fmtPrice(d.price.price) + (isFinite(ch) ? " " + fmtPct(ch) : "") : "—") +
-    (d.fees ? "  ·  fees " + fmtUsd(d.fees.period24h) : ""), mono({ href: mkt })), M);
+    (d.fees ? "  ·  fees " + fmtUsd(d.fees.period24h) : ""), mono({ href: mkt, el: "market-header" })), M);
 
   // ---- Account (the wallet shown)
   var A = [], ac0 = 0, sum = [];
   if (v.walletBad) {
-    A.push(line("Not a valid address: " + String(cfg.badWallets[0]).slice(0, 24) + " (0x + 40 hex characters)", { color: C_RED, href: SITE }));
+    A.push(line("Not a valid address: " + String(cfg.badWallets[0]).slice(0, 24) + " (0x + 40 hex characters)", { color: C_RED, href: SITE, el: "account-hint" }));
   } else if (v.hasWallet) {
     if (d.lend) {
       if (v.lowest) {
@@ -852,18 +868,18 @@ function render(d, age, cfg, nowMs, selfPath) {
         var ce = d.lend[c];
         if (ce.hf === null && !(ce.debtUsd > 0) && !(ce.equityUsd > 0)) continue;
         A.push(line("  " + padR(ce.name, 9) + (ce.hf === null ? "no debt" : "HF " + fmtHf(ce.hf) + "  debt " + fmtUsd(ce.debtUsd)) +
-          (isFinite(ce.equityUsd) ? "  equity " + fmtUsd(ce.equityUsd) : ""), { size: 11, font: "Menlo" }));
+          (isFinite(ce.equityUsd) ? "  equity " + fmtUsd(ce.equityUsd) : ""), { size: 11, font: "Menlo", href: PAGES.health, el: "account-hf-" + String(ce.name).toLowerCase().replace(/[^a-z0-9]+/g, "-") }));
       }
       A.push(line("Liquidation below HF " + (v.lowest ? v.lowest.liqHf : DEFAULT_LIQ_HF).toFixed(2) + ". Alerts at " +
         cfg.alert.warn.toFixed(2) + " (warning) and " + cfg.alert.critical.toFixed(2) + " (critical)", { size: 11, color: C_FAINT }));
       sum.push("HF " + (v.lowest ? fmtHf(v.lowest.hf) : "∞"));
     } else A.push(row("Health", "— unavailable"));
-    linkFrom(A, ac0, PAGES.health);
+    linkFrom(A, ac0, PAGES.health, "account-hf");
     A.push("---");
     ac0 = A.length;
     if (d.pnl) A.push(row("PnL", fmtSignedUsd(d.pnl.totalUsd) + "  unrealized", { color: deltaColor(d.pnl.totalUsd) }));
     else A.push(row("PnL", "— unavailable"));
-    linkFrom(A, ac0, PAGES.portfolio);
+    linkFrom(A, ac0, PAGES.portfolio, "account-pnl");
     ac0 = A.length;
     if (d.rewards) {
       var rw = d.rewards;
@@ -879,7 +895,7 @@ function render(d, age, cfg, nowMs, selfPath) {
       A.push(line("so it does not follow the wallet's current size. FT held in ftPUTs is not counted.", { size: 11, color: C_FAINT }));
       sum.push(fmtFt(rw.totalFt) + " FT");
     } else A.push(row("FT earned", "— unavailable"));
-    linkFrom(A, ac0, PAGES.rewards);
+    linkFrom(A, ac0, PAGES.rewards, "account-ft-earned");
     ac0 = A.length;
     if (d.points) {
       var rk = d.rank, pc = d.points.chains || [];
@@ -888,7 +904,7 @@ function render(d, age, cfg, nowMs, selfPath) {
       A.push(line("flyingtulip.com/rewards shows one chain at a time, the all-networks total is under it", { size: 11, color: C_FAINT }));
       sum.push(fmtPoints(d.points.total) + " pts");
     } else A.push(row("Points", "— unavailable"));
-    linkFrom(A, ac0, PAGES.points);
+    linkFrom(A, ac0, PAGES.points, "account-points");
     ac0 = A.length;
     if (d.puts) {
       var pg = putGain(d.puts, d.price ? d.price.price : NaN);
@@ -899,9 +915,9 @@ function render(d, age, cfg, nowMs, selfPath) {
         A.push(line("  #" + d.puts.rows[q].nft + "  " + d.puts.rows[q].symbol + "  cost " + fmtUsd(d.puts.rows[q].costUsd) +
           "  " + fmtFt(d.puts.rows[q].ft) + " FT", { size: 11, font: "Menlo" }));
     }
-    linkFrom(A, ac0, PAGES.put);
+    linkFrom(A, ac0, PAGES.put, "account-ftput");
   } else {
-    A.push(line("Add a wallet to see health factor, PnL, FT earned, points, ftPUT and positions", { size: 12, href: SITE }));
+    A.push(line("Add a wallet to see health factor, PnL, FT earned, points, ftPUT and positions", { size: 12, href: SITE, el: "account-hint" }));
   }
   // the wallet list: show any of them, add, edit, remove
   if (selfPath) {
@@ -911,8 +927,8 @@ function render(d, age, cfg, nowMs, selfPath) {
       A.push(line((w === cfg.wallet ? "● " : "○ ") + shortAddr(w) + (w === cfg.wallet ? "  (shown)" : ""), act("show", w, { font: "Menlo", size: 12 })));
     }
     if (cfg.fromSettings) {
-      A.push(line("These wallets come from the plugin settings (VAR_WALLET).", { size: 11, color: C_FAINT, href: PAGES.portfolio }));
-      A.push(line("Change them there, or empty it to manage them from this menu.", { size: 11, color: C_FAINT, href: PAGES.portfolio }));
+      A.push(line("These wallets come from the plugin settings (VAR_WALLET).", { size: 11, color: C_FAINT, href: PAGES.portfolio, el: "account-wallets-note" }));
+      A.push(line("Change them there, or empty it to manage them from this menu.", { size: 11, color: C_FAINT, href: PAGES.portfolio, el: "account-wallets-note" }));
     } else {
       A.push(line("Add a wallet…", act("add")));
       if (n > 0) A.push(line("Edit wallets…", act("wallet")));
@@ -920,7 +936,7 @@ function render(d, age, cfg, nowMs, selfPath) {
     }
   }
   var acHead = v.hasWallet ? "Account    " + shortAddr(cfg.wallet) + (sum.length ? "  " + sum.join("  ") : "") : "Account    add a wallet";
-  submenu(L, line(acHead, mono({ href: PAGES.portfolio, color: v.hfLevel === 2 ? C_RED : (v.hfLevel === 1 ? C_AMBER : undefined) })), A);
+  submenu(L, line(acHead, mono({ href: PAGES.portfolio, el: "account-header", color: v.hfLevel === 2 ? C_RED : (v.hfLevel === 1 ? C_AMBER : undefined) })), A);
 
   // ---- Positions (the wallet shown)
   var P = [], posHead = "Positions  —";
@@ -931,12 +947,12 @@ function render(d, age, cfg, nowMs, selfPath) {
         var ps = d.positions[k];
         var lev = isFinite(ps.leverage) && ps.leverage > 0 ? " " + ps.leverage.toFixed(ps.leverage >= 10 ? 0 : 1) + "x" : "";
         P.push(line(padR(ps.symbol + " " + ps.side + lev, 14) + padR(ps.network, 10) + "mark " + fmtPrice(ps.mark) +
-          "  " + fmtSignedUsd(ps.pnlUsd), { size: 11, font: "Menlo", color: deltaColor(ps.pnlUsd), href: marketUrl(ps.market || (ps.symbol + "-ftUSD"), ps.chainId) }));
+          "  " + fmtSignedUsd(ps.pnlUsd), { size: 11, font: "Menlo", color: deltaColor(ps.pnlUsd), href: marketUrl(ps.market || (ps.symbol + "-ftUSD"), ps.chainId), el: "positions-row" }));
       }
-      if (d.positions.length > 20) P.push(line("+" + (d.positions.length - 20) + " more on flyingtulip.com", { size: 11, href: PAGES.portfolio }));
-    } else { posHead = "Positions  none open"; P.push(line("No open positions", { size: 11, href: PAGES.portfolio })); }
-  } else P.push(line(v.hasWallet ? "Unavailable right now" : "Add a wallet to see its open positions", { size: 11, href: PAGES.portfolio }));
-  submenu(L, line(posHead, mono({ href: PAGES.portfolio })), P);
+      if (d.positions.length > 20) P.push(line("+" + (d.positions.length - 20) + " more on flyingtulip.com", { size: 11, href: PAGES.portfolio, el: "positions-more" }));
+    } else { posHead = "Positions  none open"; P.push(line("No open positions", { size: 11, href: PAGES.portfolio, el: "positions-empty" })); }
+  } else P.push(line(v.hasWallet ? "Unavailable right now" : "Add a wallet to see its open positions", { size: 11, href: PAGES.portfolio, el: "positions-empty" }));
+  submenu(L, line(posHead, mono({ href: PAGES.portfolio, el: "positions-header" })), P);
   L.push("---");
 
   // footer
@@ -945,9 +961,20 @@ function render(d, age, cfg, nowMs, selfPath) {
   var oldest = 0, k2;
   for (k2 in age) if (!(d.__fetched && d.__fetched[k2]) && age[k2] > STALE_AFTER) oldest = Math.max(oldest, age[k2]);
   if (oldest > 0) L.push(line("Some sources are showing data up to " + ageText(oldest) + " old", { size: 10, color: C_AMBER }));
-  if (selfPath && !cfg.fromSettings) L.push(line(n ? "Wallets…" : "Add a wallet…", act(n ? "wallet" : "add", null, { size: 12 })));
-  L.push(line("Public API only, no keys. Not financial advice.", { size: 10, color: C_FAINT, href: "https://flyingtulip.com" }));
-  linkFrom(L, ft0, SITE);
+  L.push(line("Public API only, no keys. Not financial advice.", { size: 10, color: C_FAINT, href: SITE, el: "footer-disclaimer" }));
+  linkFrom(L, ft0, SITE, "footer-updated");
+  // Settings: the wallets (unless they come from VAR_WALLET) and, under Advanced, the anonymous usage stats switch
+  if (selfPath) {
+    var SL = [];
+    if (!cfg.fromSettings) {
+      if (n) SL.push(line("Wallets…", act("wallet", null, { size: 12 })));
+      SL.push(line("Add a wallet…", act("add", null, { size: 12 })));
+    }
+    SL.push(line("Advanced", { size: 12 }));
+    if (!cfg.analytics) SL.push(line("--Anonymous usage stats: off (VAR_ANALYTICS in the plugin settings)", { size: 12, href: "https://github.com/flyingtulipdotcom/ft-desktop-widgets/tree/main/xbar#anonymous-usage-stats" }));
+    else SL.push(line("--Anonymous usage stats: " + (cfg.statsOn ? "on (click to turn off)" : "off (click to turn on)"), act("stats", null, { size: 12 })));
+    submenu(L, line("Settings", { size: 12 }), SL);
+  }
   return L.join("\n");
 }
 
@@ -977,28 +1004,86 @@ function buildConfig(a) {
     alert: { warn: warn, critical: crit, cooldownMs: (isFinite(cd) && cd >= 1 ? cd : 30) * 60000 },
     notify: !/^(false|0|no|off)$/i.test(String(a.notify === undefined ? "true" : a.notify).trim()),
     priceChain: pc === 146 ? 146 : 1,
-    stateDir: a.stateDir || "", walletFile: a.walletFile || "", self: a.self || ""
+    stateDir: a.stateDir || "", walletFile: a.walletFile || "", self: a.self || "",
+    analytics: !/^(false|0|no|off)$/i.test(String(a.analytics === undefined ? "true" : a.analytics).trim()),
+    host: a.host === "SwiftBar" ? "SwiftBar" : "xbar"
   };
+}
+
+// ---- anonymous usage stats (Plausible), see the README ---------------------------------------------------------
+// Only the event name, the platform, the plugin version and the few values below (os, element, url, level, endpoint,
+// a wallet count bucket) are sent, by curl in the background, fire and forget. Never a wallet address, balance or
+// position; any 0x address that slips into a value becomes ":address". Nothing is sent while VAR_ANALYTICS is false
+// or "Anonymous usage stats" is off under Settings > Advanced. Each event name is capped at 30 per hour.
+var WIDGET_VERSION = "1.2.0";
+var STATS_ENDPOINT = "https://plausible.io/api/event";
+var STATS_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) FlyingTulipWidget/" + WIDGET_VERSION;
+var STAT_CAP = 30;
+function statValue(v) { return String(v).replace(/0x[0-9a-fA-F]{40}/g, ":address").slice(0, 300); }
+function statBody(name, props) {
+  var p = { platform: "macos", version: WIDGET_VERSION };
+  for (var k in (props || {})) p[k] = statValue(props[k]);
+  return JSON.stringify({ name: name, url: "app://widget/macos", domain: "widget", props: p });
+}
+function statArgs(body) {
+  return ["/usr/bin/curl", "-s", "-m", "10", "-o", "/dev/null", "-X", "POST", STATS_ENDPOINT,
+    "-H", "Content-Type: application/json", "-A", STATS_UA, "-d", body];
+}
+function statsSwitchFile(cfg) { return cfg.walletFile.replace(/\/[^\/]*$/, "") + "/usage-stats"; }
+function statsOn(io, cfg) { return cfg.analytics && String(io.readFile(statsSwitchFile(cfg)) || "").replace(/\s/g, "") !== "off"; }
+// ctx = {on, ss (persisted counters in the state file), nowMs, out}
+function statsContext(io, cfg, st, nowMs) {
+  if (!st.stats || typeof st.stats !== "object") st.stats = {};
+  return { on: statsOn(io, cfg), ss: st.stats, nowMs: nowMs, out: [] };
+}
+function stat(ctx, name, props) {
+  if (!ctx || !ctx.on) return false;
+  var ss = ctx.ss, hour = Math.floor(ctx.nowMs / 3600000);
+  if (ss.hour !== hour) { ss.hour = hour; ss.counts = {}; }
+  if (!ss.counts) ss.counts = {};
+  var c = ss.counts[name] || 0;
+  if (c >= STAT_CAP) return false;
+  ss.counts[name] = c + 1;
+  ctx.out.push(statArgs(statBody(name, props)));
+  return true;
+}
+function statsFlush(io, ctx) { if (ctx && ctx.out.length) { try { io.post(ctx.out); } catch (e) { /* never matters */ } ctx.out = []; } }
+function walletsBucket(n) { return n >= 3 ? "3+" : String(n); }
+var STAT_ENDPOINT = { price: "ticker", fees: "fees", feesSeries: "fees", klines: "klines", lend: "lend", pnl: "summary",
+  rewards: "rewards", points: "points", positions: "positions", puts: "ftput", rank: "leaderboard" };
+// a failed or unusable answer, at most once an hour per endpoint
+function statFetchError(ctx, key) {
+  var ep = STAT_ENDPOINT[String(key).replace(/@.*/, "")];
+  if (!ep || !ctx || !ctx.on) return;
+  if (!ctx.ss.errAt) ctx.ss.errAt = {};
+  if (ctx.nowMs - (ctx.ss.errAt[ep] || 0) < 3600000) return;
+  ctx.ss.errAt[ep] = ctx.nowMs;
+  stat(ctx, "Fetch error", { endpoint: ep });
 }
 
 // "Wallets…" edits the whole list (comma separated), "Add a wallet…" appends, "Remove 0x…" drops one. The list is
 // saved one address per line in the wallet file (a 1.0.x file with one address is the same format).
 function savedWallets(io, cfg) { return parseWallets(io.readFile(cfg.walletFile) || "").list; }
 function writeWallets(io, cfg, list) { io.writeFile(cfg.walletFile, list.join("\n")); }
-function runWalletPrompt(io, cfg, mode, arg) {
+function runWalletPrompt(io, cfg, mode, arg, ctx) {
   var cur = savedWallets(io, cfg);
   if (mode === "remove") {
-    writeWallets(io, cfg, cur.filter(function (w) { return w !== normalizeWallet(arg); }));
+    var left = cur.filter(function (w) { return w !== normalizeWallet(arg); });
+    writeWallets(io, cfg, left);
+    if (left.length < cur.length) stat(ctx, "Wallet removed");
     return "";
   }
+  stat(ctx, "Settings open");
   var input = mode === "add"
     ? io.prompt("", "Public wallet address to add (0x...).")
-    : io.prompt(cur.join(", "), "Public wallet addresses to track (0x...), comma separated. Leave empty to clear.");
+    : io.prompt(cur.join(", "), "Public wallet addresses to show (0x...), comma separated. Leave empty to clear.");
   if (input === null) return "";
   var p = parseWallets(input);
   if (p.bad.length) { io.alert("Not a valid address: " + String(p.bad[0]).slice(0, 24) + ". Use 0x followed by 40 hex characters."); return ""; }
   var list = mode === "add" ? cur.concat(p.list.filter(function (w) { return cur.indexOf(w) < 0; })) : p.list;
   writeWallets(io, cfg, list);
+  if (list.some(function (w) { return cur.indexOf(w) < 0; })) stat(ctx, "Wallet added");
+  if (cur.some(function (w) { return list.indexOf(w) < 0; })) stat(ctx, "Wallet removed");
   return "";
 }
 
@@ -1021,7 +1106,7 @@ function hasDebt(list) {
 }
 
 // Alerts for one wallet, from a lend read made this run only. Returns true when its level went up.
-function alertWallet(io, cfg, st, w, nowMs) {
+function alertWallet(io, cfg, st, w, nowMs, ctx) {
   var slot = walletSlot(st, w), prev = slot.alert.level || 0, lend = slot.cache.lend ? slot.cache.lend.v : null;
   var dn = decideNotify(slot.alert, lend ? lowestHf(lend) : null, { warn: cfg.alert.warn, critical: cfg.alert.critical, cooldownMs: cfg.alert.cooldownMs }, nowMs);
   slot.alert = dn.state;
@@ -1029,19 +1114,49 @@ function alertWallet(io, cfg, st, w, nowMs) {
     if (cfg.wallets.length > 1) dn.notify.wallet = shortAddr(w);
     var nt = notifyText(dn.notify); io.notify(nt.title, nt.body, nt.urgency);
   }
+  if (dn.notify) stat(ctx, "HF alert shown", { level: dn.notify.level === 2 ? "danger" : "warning" });
   return dn.state.level > prev;
 }
 
 function main(io, a, nowMs) {
   var cfg = buildConfig(a);
-  if (a.cmd === "wallet" || a.cmd === "add" || a.cmd === "remove") return runWalletPrompt(io, cfg, a.cmd, a.arg);
+  var statePath = cfg.stateDir + "/state.json";
+  // menu actions that do not redraw: open a page (counted), the usage stats switch, the wallet dialogs
+  if (a.cmd === "open") {
+    var url = String(a.arg2 || "");
+    if (!/^https:\/\/flyingtulip\.com\//.test(url)) return "";
+    var st0 = loadState(io, statePath), c0 = statsContext(io, cfg, st0, nowMs);
+    stat(c0, "Link click", { element: String(a.arg || "").replace(/[^a-z0-9-]/g, "").slice(0, 60), url: url });
+    statsFlush(io, c0);
+    try { saveState(io, statePath, st0); } catch (e) { /* optional */ }
+    io.openUrl(url);
+    return "";
+  }
+  if (a.cmd === "stats") { io.writeFile(statsSwitchFile(cfg), statsOn(io, cfg) ? "off" : "on"); return ""; }
+  if (a.cmd === "wallet" || a.cmd === "add" || a.cmd === "remove") {
+    var st1 = loadState(io, statePath), c1 = statsContext(io, cfg, st1, nowMs);
+    var r = runWalletPrompt(io, cfg, a.cmd, a.arg, c1);
+    statsFlush(io, c1);
+    try { saveState(io, statePath, st1); } catch (e) { /* optional */ }
+    return r;
+  }
   // wallets from the plugin settings win; otherwise the ones saved from the menu
   cfg.fromSettings = cfg.wallets.length > 0 || cfg.badWallets.length > 0;
   if (!cfg.fromSettings && cfg.walletFile) {
     cfg.wallets = savedWallets(io, cfg); cfg.wallet = cfg.wallets[0] || "";
   }
-  var statePath = cfg.stateDir + "/state.json";
-  var st = loadState(io, statePath);
+  var st = loadState(io, statePath), sx = statsContext(io, cfg, st, nowMs);
+  LINKS.on = sx.on; LINKS.self = cfg.self;
+  if (a.cmd === "next" || a.cmd === "show") stat(sx, "Wallet switch");
+  if (a.cmd === "refresh") stat(sx, "Refresh");
+  // one pageview a day (the plugin has no launch of its own: it runs every minute)
+  if (sx.on && (!sx.ss.pageAt || nowMs - sx.ss.pageAt >= 86400000)) {
+    var osv = "";
+    try { osv = String(io.osVersion() || ""); } catch (e) { osv = ""; }
+    var major = (osv.match(/^(\d+)/) || [])[1];
+    if (stat(sx, "pageview", { os: major ? "macOS " + major : "macOS", host: cfg.host,
+      walletsConfigured: walletsBucket((cfg.wallets.length ? cfg.wallets : savedWallets(io, cfg)).length) })) sx.ss.pageAt = nowMs;
+  }
   for (var w0 in st.wallets) if (cfg.wallets.indexOf(w0) < 0) delete st.wallets[w0];   // removed wallets
 
   // which wallet to show: a manual pick, else every minute the next one, except while one is low (it stays)
@@ -1070,10 +1185,10 @@ function main(io, a, nowMs) {
   var res = loadSources(io, specsFor(cur), st.cache, nowMs);
   // alerts: the shown wallet and every hidden wallet read this run; one that just turned low is shown at once
   var jump = "";
-  if (cur && res.fetched.lend) alertWallet(io, cfg, st, cur, nowMs);
+  if (cur && res.fetched.lend) alertWallet(io, cfg, st, cur, nowMs, sx);
   for (var k = 0; k < n; k++) {
     var hw = cfg.wallets[k];
-    if (hw !== cur && res.fetched["lend@" + hw] && alertWallet(io, cfg, st, hw, nowMs) && !jump) jump = hw;
+    if (hw !== cur && res.fetched["lend@" + hw] && alertWallet(io, cfg, st, hw, nowMs, sx) && !jump) jump = hw;
   }
   if (jump) {
     cur = jump; st.shownAt = nowMs;
@@ -1100,11 +1215,15 @@ function main(io, a, nowMs) {
     if (!rc || nowMs - rc.t >= SLOW_TTL * 1000) {
       var rv = findRank(io, cur, d.points.total);
       if (rv !== FAIL) cc.rank = { t: nowMs, v: rv };
+      else statFetchError(sx, "rank");
     }
     d.rank = cc.rank ? cc.rank.v : null;
   }
   d.__fetched = res.fetched;
+  for (var fi = 0; fi < (res.failed || []).length; fi++) statFetchError(sx, res.failed[fi]);
+  statsFlush(io, sx);
   try { saveState(io, statePath, st); } catch (e) { /* cache is optional */ }
+  cfg.statsOn = sx.on;
   return render(d, age, cfg, nowMs, cfg.self);
 }
 
@@ -1144,19 +1263,27 @@ function jxaIO() {
     prompt: function (cur, msg) {
       try {
         try { app.activate(); } catch (e) { /* the dialog still shows */ }
-        var r = app.displayDialog(msg || "Public wallet addresses to track (0x...), comma separated. Leave empty to clear.", {
+        var r = app.displayDialog(msg || "Public wallet addresses to show (0x...), comma separated. Leave empty to clear.", {
           defaultAnswer: cur, withTitle: "Flying Tulip", buttons: ["Cancel", "Save"], defaultButton: "Save", cancelButton: "Cancel" });
         return r.textReturned;
       } catch (e) { return null; }
     },
-    alert: function (msg) { try { app.displayAlert("Flying Tulip", { message: msg }); } catch (e) { /* dismissed */ } }
+    alert: function (msg) { try { app.displayAlert("Flying Tulip", { message: msg }); } catch (e) { /* dismissed */ } },
+    // anonymous usage stats: each request is a background curl, so the menu never waits for it
+    post: function (argLists) {
+      var cmd = argLists.map(function (al) { return al.map(shq).join(" ") + " >/dev/null 2>&1 &"; }).join(" ");
+      try { sh(cmd); } catch (e) { /* never matters */ }
+    },
+    osVersion: function () { return sh("/usr/bin/sw_vers -productVersion"); },
+    openUrl: function (u) { sh("/usr/bin/open " + shq(u)); }
   };
 }
 
 function run(argv) {
   var a = {
     cmd: argv[0] || "run", wallet: argv[1] || "", hfWarn: argv[2], hfCritical: argv[3], notify: argv[4],
-    cooldownMin: argv[5], priceChain: argv[6], stateDir: argv[7], walletFile: argv[8], self: argv[9], arg: argv[10] || ""
+    cooldownMin: argv[5], priceChain: argv[6], stateDir: argv[7], walletFile: argv[8], self: argv[9], arg: argv[10] || "",
+    arg2: argv[11] || "", analytics: argv[12], host: argv[13]
   };
   try { return main(jxaIO(), a, Date.now()); }
   catch (e) { return line("FT ⚠", { image: LOGO_B64, color: C_AMBER }) + "\n---\n" + line("Plugin error: " + e, { color: C_RED }) + "\n" + line("Open flyingtulip.com", { href: SITE }); }
@@ -1164,7 +1291,7 @@ function run(argv) {
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
-    main: main, buildConfig: buildConfig, parseWallets: parseWallets, pinnedWallet: pinnedWallet, render: render, loadSources: loadSources, sourceSpecs: sourceSpecs, findRank: findRank,
+    main: main, buildConfig: buildConfig, statBody: statBody, statArgs: statArgs, STATS_UA: STATS_UA, WIDGET_VERSION: WIDGET_VERSION, parseWallets: parseWallets, pinnedWallet: pinnedWallet, render: render, loadSources: loadSources, sourceSpecs: sourceSpecs, findRank: findRank,
     parseFees: parseFees, parsePrice: parsePrice, parseLend: parseLend, parseSummary: parseSummary, mergeChains: mergeChains,
     lowestHf: lowestHf, parseRewards: parseRewards, earnedByChain: earnedByChain, parsePuts: parsePuts, putGain: putGain, parsePoints: parsePoints,
     rankInPage: rankInPage, parsePositions: parsePositions, parseFeesSeries: parseFeesSeries, parseKlines: parseKlines,
@@ -1187,4 +1314,7 @@ exec /usr/bin/osascript -l JavaScript -e "$FT_JS" \
   "$CACHE_DIR" \
   "$WALLET_FILE" \
   "$SELF" \
-  "${2:-}" 2>&1
+  "${2:-}" \
+  "${3:-}" \
+  "${VAR_ANALYTICS:-true}" \
+  "${SWIFTBAR:+SwiftBar}" 2>&1

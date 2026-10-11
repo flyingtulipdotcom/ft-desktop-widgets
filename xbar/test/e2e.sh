@@ -7,6 +7,8 @@ PLUGIN="$HERE/../Cryptocurrency/FlyingTulip/flyingtulip.1m.sh"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 sed "s|/usr/bin/osascript|$HERE/osascript-shim.js|" "$PLUGIN" > "$T/flyingtulip.1m.sh"; chmod +x "$T/flyingtulip.1m.sh"
 export HOME="$T/home" SHIM_LOG="$T/shim.log" PATH="$PATH"; mkdir -p "$HOME"
+# usage stats stay off here unless asked for (VAR_ANALYTICS=true test/e2e.sh), so test runs do not count as users
+export VAR_ANALYTICS="${VAR_ANALYTICS:-false}"
 # the plugin resets PATH to the macOS one; /usr/bin must have node-free tools only, the shim uses its own shebang
 sed -i 's|^export PATH=.*|export PATH="/usr/bin:/bin:$PATH"|' "$T/flyingtulip.1m.sh"
 out="$(VAR_WALLET="${1:-}" "$T/flyingtulip.1m.sh")"

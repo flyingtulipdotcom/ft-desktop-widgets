@@ -61,12 +61,13 @@ factor per chain, PnL, FT earned with its breakdown, points per chain and rank, 
 
 | variable | default | meaning |
 |---|---|---|
-| `VAR_WALLET` | empty | public addresses to track, comma separated |
+| `VAR_WALLET` | empty | public addresses to show, comma separated |
 | `VAR_HF_WARN` | `1.40` | warning notification at or below this health factor |
 | `VAR_HF_CRITICAL` | `1.30` | critical notification at or below this health factor (keep it above 1.25) |
 | `VAR_NOTIFICATIONS` | `true` | show macOS notifications; `false` keeps only the coloured title |
 | `VAR_NOTIFY_COOLDOWN_MIN` | `30` | minimum minutes between two notifications of the same level |
 | `VAR_PRICE_CHAIN` | `1` | chain of the FT-ftUSD market price: `1` Ethereum or `146` Sonic |
+| `VAR_ANALYTICS` | `true` | Advanced: anonymous usage stats, `false` turns them off (see "Anonymous usage stats") |
 
 The file carries both the xbar metadata (`<xbar.var>`) and the SwiftBar one (`<swiftbar.environment>`). If your SwiftBar
 shows every setting twice, delete the `<swiftbar.environment>` line.
@@ -125,6 +126,41 @@ What is covered and what is not is listed in [TESTING.md](TESTING.md).
 ## Submitting to the xbar plugin catalogue
 
 See [CATALOGUE.md](CATALOGUE.md).
+
+## Anonymous usage stats
+
+To learn how the widgets are used, the plugin sends a few anonymous events to [Plausible](https://plausible.io)
+(`https://plausible.io/api/event`, site "widget"). **No wallet address, balance, position, health factor or any other
+account data is ever sent.** Each event is one small background `curl`, fire and forget: if it fails, nothing changes
+in the menu. The menu bar plugin cannot see the dropdown being opened or a submenu being shown, so it sends no
+"Panel open" or "Tab view"; while usage stats are on, a link runs the plugin once (the click is counted) and then
+opens the page.
+
+**Turn it off**: *Settings > Advanced > Anonymous usage stats* in the dropdown, or set **VAR_ANALYTICS** to false in the
+plugin settings. Nothing is sent while it is off.
+
+| Event | When | Values sent with it |
+|---|---|---|
+| pageview | at launch (Windows, Omarchy) and once a day while it runs (all three) | `os` (e.g. "Windows 11", "macOS 15", "Arch Linux"), `host` (Rainmeter version, xbar or SwiftBar, Quickshell), `walletsConfigured` (0, 1, 2 or 3+) |
+| Panel open | the panel is opened (Omarchy), the mouse comes over the skin, at most once per 30 minutes (Windows) | |
+| Tab view | a tab is picked (Windows, Omarchy) | `tab`: market, account or positions |
+| Link click | an element that opens flyingtulip.com is clicked | `element` (see below), `url` (the page opened; any wallet address in it is replaced by ":address") |
+| Wallet switch | the switch icon or "Next wallet" is used (not the automatic rotation) | |
+| Settings open | the wallet settings are opened | |
+| Wallet added, Wallet removed | a wallet is added or removed (never which one) | |
+| HF alert shown | a health factor notification is shown | `level`: warning or danger (never the value or the wallet) |
+| Refresh | the refresh button is used | |
+| Fetch error | an API call fails, at most once an hour per endpoint | `endpoint`: ticker, fees, klines, lend, summary, positions, rewards, points, leaderboard, ftput |
+
+Every event also carries `platform` (windows, macos or omarchy) and `version`. Each event name is sent at most 30 times
+an hour. Element ids, the same on every platform where the element exists: `header-logo`, `header-title`,
+`header-wallet`, `header-status`, `header-open-site`, `menu-open-site`, `banner-hf`, `tabs-rule`, `market-header`,
+`market-ft-price`, `market-fees`, `market-day-over-day`, `market-fees-chart`, `market-price-chart`, `account-header`,
+`account-hint`, `account-wallets-note`, `account-hf`, `account-hf-<chain>` (e.g. `account-hf-sonic`), `account-pnl`,
+`account-ft-earned`, `account-ft-earned-detail`, `account-ft-earned-chart`, `account-ft-earned-daily`, `account-points`,
+`account-points-detail`, `account-points-positions`, `account-ftput`, `account-ftput-positions`, `positions-header`,
+`positions-card`, `positions-row`, `positions-more`, `positions-empty`, `footer-updated`, `footer-open-site`,
+`footer-disclaimer`.
 
 ## Disclaimer, license
 

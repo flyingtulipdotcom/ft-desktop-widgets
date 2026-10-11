@@ -41,7 +41,8 @@ const CONTROLS = new Set(["MeterCog", "MeterSwitch", "MeterTabMarket", "MeterTab
 for (const n of CONTROLS) ok(/^\[!CommandMeasure MeasureScript "\w+\('?\w*'?\)"\]$/.test((main.sections[n] || {}).LeftMouseUpAction || ""), n + " must call the script")
 for (const [n, s] of Object.entries(main.sections)) {
   if (!n.startsWith("Meter") || n === "MeterBackground" || n.startsWith("MeterBtn") || n === "MeterInput" || CONTROLS.has(n)) continue
-  ok(/^\["https:\/\/flyingtulip\.com\/[^"]*"\]$/.test(s.LeftMouseUpAction || ""), n + " has no flyingtulip.com link")
+  // through OpenLink(element, url), which counts the click (anonymous usage stats) and opens the page
+  ok(/^\[!CommandMeasure MeasureScript "OpenLink\('[a-z0-9-]+','https:\/\/flyingtulip\.com\/[^']*'\)"\]$/.test(s.LeftMouseUpAction || ""), n + " has no flyingtulip.com link through OpenLink")
 }
 
 // Option names Rainmeter 4.5 actually reads (MeasureWebParser.cpp, Measure.cpp/Section.cpp, PluginInputText).
@@ -121,6 +122,14 @@ for (const f of all.filter(f => /\.(ini|inc|lua|ps1|md|sh|js|txt)$/.test(f) && !
   const t = fs.readFileSync(f, "utf8")
   ok(!/opbalance|galaxy\.|\.dev\.|staging|localhost|0x(?!0{38}dEaD|0{40}\b)[0-9a-fA-F]{40}/i.test(t), "scrub: " + f)
 }
+// the usage stats script: Plausible's event API, the "widget" site, a browser-like user agent, never a wallet
+const us = fs.readFileSync(path.join(root, "@Resources", "UsageStats.ps1"), "utf8")
+ok(/"https:\/\/plausible\.io\/api\/event"/.test(us) && /domain = "widget"/.test(us) && /url = "app:\/\/widget\/windows"/.test(us), "UsageStats.ps1 target")
+ok(/\$ua = "Mozilla\/5\.0 \(Windows NT 10\.0; Win64; x64\) FlyingTulipWidget\/" \+ \$Version/.test(us), "UsageStats.ps1 must send a browser-like user agent")
+ok(/-TimeoutSec 10/.test(us) && /0x\[0-9a-fA-F\]\{40\}/.test(us), "UsageStats.ps1: short timeout and the address scrub")
+ok(/^local SKIN_VERSION = "([^"]+)"$/m.test(lua) && lua.match(/^local SKIN_VERSION = "([^"]+)"$/m)[1] === (fs.readFileSync(path.join(root, "..", "..", "RMSKIN.ini"), "utf8").match(/^Version=(.+)$/m) || [])[1], "SKIN_VERSION must match RMSKIN.ini")
+for (const f of [path.join(root, "Main.ini"), path.join(root, "@Resources", "Settings.inc"), path.join(root, "@Resources", "UsageStats.ps1"), path.join(root, "@Resources", "Lua", "FlyingTulip.lua")])
+  ok(!/trac[k]/i.test(fs.readFileSync(f, "utf8")), "wording: " + path.basename(f) + " uses calm wording for usage stats")
 // the PowerShell toast script: static sanity (no PowerShell on this machine)
 const ps = fs.readFileSync(path.join(root, "@Resources", "Notify.ps1"), "utf8")
 const open = (ps.match(/[{(]/g) || []).length, close = (ps.match(/[})]/g) || []).length
