@@ -2,8 +2,14 @@ import AppKit
 import FTWidgetCore
 import SwiftUI
 
+struct ContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct PanelView: View {
     @EnvironmentObject var model: AppModel
+    @State var contentH: CGFloat = 400
 
     var body: some View {
         VStack(spacing: 10) {
@@ -24,8 +30,10 @@ struct PanelView: View {
                     }
                 }
                 .padding(.vertical, 1)
+                .background(GeometryReader { g in Color.clear.preference(key: ContentHeightKey.self, value: g.size.height) })
             }
-            .frame(height: 596)
+            .onPreferenceChange(ContentHeightKey.self) { contentH = $0 }
+            .frame(height: min(max(contentH, 120), 680))
             Rectangle().fill(Theme.border).frame(height: 1)
             footer
         }

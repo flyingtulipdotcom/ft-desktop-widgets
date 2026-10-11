@@ -34,7 +34,9 @@ jobs:
         run: swift --version
       - name: Unit tests
         working-directory: macos
-        run: swift test 2>&1 | tee ../swift-test.log
+        run: |
+          set -o pipefail
+          swift test 2>&1 | tee ../swift-test.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -17,12 +17,12 @@ struct BarChart: View {
             ZStack(alignment: .topTrailing) {
                 Chart {
                     ForEach(Array(values.enumerated()), id: \.offset) { i, v in
-                        BarMark(x: .value("Day", i), y: .value("Value", v.value), width: .ratio(0.72))
+                        BarMark(x: .value("Day", String(i)), y: .value("Value", v.value), width: .ratio(0.72))
                             .foregroundStyle(i == values.count - 1 ? lastColor : barColor)
                             .cornerRadius(1.5)
                     }
                 }
-                .chartXScale(domain: -0.6...(Double(values.count) - 0.4))
+                .chartXScale(domain: values.indices.map { String($0) })
                 .chartYScale(domain: 0...(maxV * 1.04))
                 .chartXAxis(.hidden)
                 .chartYAxis {

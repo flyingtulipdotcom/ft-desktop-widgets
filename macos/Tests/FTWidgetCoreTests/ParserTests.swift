@@ -66,7 +66,7 @@ final class ParserTests: XCTestCase {
         XCTAssertEqual(r.lendFt, 3.5, accuracy: 1e-9)
         XCTAssertEqual(r.totalFt, 6.5, accuracy: 1e-9)
         XCTAssertEqual(r.claimableFt, 1, accuracy: 1e-9)
-        XCTAssertEqual(Parse.earnedByChain(r), "Sonic 6.5")
+        XCTAssertEqual(Parse.earnedByChain(r), "Sonic 6.50")
         // a stale claimed figure makes the total unknown instead of wrong
         let stale = json(#"{"data":{"chains":[{"chainId":146,"staking":{"pending_yield_ft":"1","claimed_yield_ft":"1","claimed_yield_indexed_through_block":5,"claimed_yield_stale":true}}]}}"#)
         XCTAssertTrue(try XCTUnwrap(Parse.rewards(stale)).totalFt.isNaN)
