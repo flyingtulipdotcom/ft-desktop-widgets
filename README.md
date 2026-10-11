@@ -22,8 +22,16 @@ The widgets only read data for the public address you give them and never send t
 
 | Platform | Widget | Folder |
 |---|---|---|
-| macOS | xbar and SwiftBar plugin | [`xbar/`](xbar) |
+| macOS | Native menu bar app (SwiftUI) | [`macos/`](macos) |
+| macOS | xbar and SwiftBar plugin (the alternative) | [`xbar/`](xbar) |
 | Windows | Rainmeter skin | [`rainmeter/`](rainmeter) |
+
+## Install on macOS
+
+Two ways, the same data and alerts:
+
+1. **Native app** (macOS 13 or later): download the `.dmg` from the [releases page](https://github.com/flyingtulipdotcom/ft-desktop-widgets/releases) (look for `macos-v…`), drag Flying Tulip to Applications and open it. It is not notarized yet, so the first time use right-click > Open, or System Settings > Privacy & Security > Open Anyway. Details in [macos/README.md](macos/README.md).
+2. **xbar or SwiftBar plugin**: one script, see [xbar/README.md](xbar/README.md).
 
 On Linux, see the [Omarchy bar plugin](https://github.com/flyingtulipdotcom/omarchy-ft-bar).
 
