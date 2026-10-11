@@ -100,7 +100,7 @@ cropshot() { screencapture -x -R"$2" "$OUT/$1.png" 2>>"$OUT/screencapture.log" |
 cropshot dropdown-open 1400,0,520,340
 # Submenus open on hover, to the left of the menu (it is at the right edge of the screen).
 cliclick m:1600,118 >>"$OUT/click.log" 2>&1; sleep 2; cropshot submenu-market 700,0,1220,620
-cliclick m:1600,140 >>"$OUT/click.log" 2>&1; sleep 2; cropshot submenu-account 700,0,1220,900
+cliclick m:1600,140 >>"$OUT/click.log" 2>&1; sleep 2; cropshot submenu-account 700,0,1220,1080
 cliclick m:1600,162 >>"$OUT/click.log" 2>&1; sleep 2; cropshot submenu-positions 700,0,1220,620
 cliclick kp:esc >/dev/null 2>&1 || true
 rm -f "$OUT/full-screen.png"
