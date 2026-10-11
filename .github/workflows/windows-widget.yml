@@ -231,5 +231,6 @@ jobs:
         run: |
           mkdir rel
           find dist -type f \( -name "*.msix" -o -name "*.cer" -o -name "install.ps1" -o -name "*.zip" \) -exec cp {} rel/ \;
+          (cd rel && sha256sum * > SHA256SUMS && cat SHA256SUMS)
           ls -l rel
           gh release create "$TAG" --title "Windows 11 widget ${TAG#windows-widget-v}" --notes-file windows-widget/RELEASE_NOTES.md rel/*

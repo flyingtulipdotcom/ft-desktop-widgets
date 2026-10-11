@@ -12,6 +12,7 @@ on:
       - ".github/scripts/macos-native-screenshot.sh"
   push:
     branches: [main]
+    tags: ["macos-v*"]
     paths:
       - "macos/**"
       - ".github/workflows/macos-native.yml"
@@ -177,3 +178,23 @@ jobs:
           path: |
             macos/dist/*.dmg
             macos/dist/*.zip
+
+  # A tag macos-v* publishes the .dmg and .zip with a SHA256SUMS file (the one-line installer verifies against it).
+  release:
+    if: startsWith(github.ref, 'refs/tags/macos-v')
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: FlyingTulip-macos-adhoc
+          path: rel
+      - name: Checksums and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd rel
+          sha256sum *.dmg *.zip > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Flying Tulip for macOS (native app) ${TAG#macos-v}" --notes "Native menu bar app, macOS 13 or later. Not notarized yet, see macos/README.md." *.dmg *.zip SHA256SUMS
