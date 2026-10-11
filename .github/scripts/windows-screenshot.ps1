@@ -86,7 +86,7 @@ public static class Win {
     using (var g = Graphics.FromImage(bmp)) { g.Clear(clear); var dc = g.GetHdc(); PrintWindow(found, dc, 2); g.ReleaseHdc(dc); }
     // the window keeps the tallest tab's height: crop the empty rows under the panel
     int last = bmp.Height - 1;
-    while (last > 10 && bmp.GetPixel(bmp.Width / 2, last).ToArgb() == clear.ToArgb()) last--;
+    while (last > 10) { var px = bmp.GetPixel(bmp.Width / 2, last); if (px.ToArgb() != clear.ToArgb() && (px.R > 2 || px.G > 2 || px.B > 2)) break; last--; }
     if (last < bmp.Height - 1) { var c = bmp.Clone(new Rectangle(0, 0, bmp.Width, last + 2), bmp.PixelFormat); bmp.Dispose(); return c; }
     return bmp;
   }
