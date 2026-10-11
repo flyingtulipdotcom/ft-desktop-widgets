@@ -72,7 +72,7 @@ jobs:
           {
             echo "## macOS widget screenshots"
             echo
-            for f in menubar-title dropdown-open full-screen; do
+            for f in menubar-title-right dropdown-open-ax dropdown-open-cliclick full-screen; do
               [ -f "out/$f.png" ] || continue
               echo "### $f"
               echo

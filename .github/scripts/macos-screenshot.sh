@@ -51,7 +51,7 @@ log "screen: $(system_profiler SPDisplaysDataType 2>/dev/null | grep -i resoluti
 shot desktop-before
 
 xattr -dr com.apple.quarantine /Applications/SwiftBar.app 2>&1 | tee -a "$OUT/swiftbar-launch.log" || true
-open -a SwiftBar >>"$OUT/swiftbar-launch.log" 2>&1 || log "open failed"
+open /Applications/SwiftBar.app >>"$OUT/swiftbar-launch.log" 2>&1 || log "open failed"
 sleep 5
 if ! pgrep -x SwiftBar >/dev/null; then
   log "SwiftBar not running after open, starting the binary directly"
@@ -69,14 +69,12 @@ pgrep -x SwiftBar >/dev/null && log "SwiftBar running" || log "SwiftBar NOT runn
 osascript -e 'tell application "System Events" to get name of every process whose background only is false' 2>&1 | tee "$OUT/processes.txt" || true
 
 shot full-screen
-# Menu bar strip: top 60 points (screencapture is in pixels, so crop by the real width).
-read -r W H < <(sips -g pixelWidth -g pixelHeight "$OUT/full-screen.png" | awk '/pixel/{print $2}' | paste -sd' ' -)
-scale=1
-[ "${W:-0}" -gt 2000 ] && scale=2
-sips -c $((60*scale)) "$W" "$OUT/full-screen.png" --out "$OUT/menubar-title.png" >/dev/null 2>&1 || true
+# Menu bar strip (the screen is 1920x1080 points on the runner).
+screencapture -x -R0,0,1920,28 "$OUT/menubar-title.png" 2>>"$OUT/screencapture.log" || true
+screencapture -x -R1300,0,620,28 "$OUT/menubar-title-right.png" 2>>"$OUT/screencapture.log" || true
 
 # ---- 3. open the dropdown -------------------------------------------------------------------------
-log "opening the dropdown through System Events"
+log "opening the dropdown"
 cat >"$OUT/click.applescript" <<'AS'
 tell application "System Events"
   tell process "SwiftBar"
@@ -86,22 +84,27 @@ tell application "System Events"
         set out to out & "menu bar " & i & ": " & (count of menu bar items of menu bar i) & " items" & linefeed
       end try
     end repeat
-    log out
-    click menu bar item 1 of menu bar 2
+    return out
   end tell
 end tell
 AS
-( osascript "$OUT/click.applescript" >"$OUT/click.log" 2>&1 & )
-sleep 4
-shot dropdown-open
+osascript "$OUT/click.applescript" >"$OUT/click.log" 2>&1 || true
 cat "$OUT/click.log"
+# AX press of the SwiftBar status item (first try), then a real mouse click with cliclick (second try).
+( osascript -e 'tell application "System Events" to tell process "SwiftBar" to click menu bar item 1 of menu bar 1' >>"$OUT/click.log" 2>&1 & )
+sleep 4
+shot dropdown-open-ax
 osascript -e 'tell application "System Events" to key code 53' 2>/dev/null || true
-
-if ! grep -qi 'error' "$OUT/click.log"; then
-  log "System Events click produced no error"
-else
-  log "System Events click failed, see click.log"
-fi
+sleep 1
+brew install cliclick >>"$OUT/brew.log" 2>&1 || true
+# The widget sits left of the search icon; click at its title (x about 1600 points).
+cliclick m:1600,12 >>"$OUT/click.log" 2>&1 || true
+sleep 1
+cliclick c:1600,12 >>"$OUT/click.log" 2>&1 || true
+sleep 3
+shot dropdown-open-cliclick
+cp "$OUT/dropdown-open-cliclick.png" "$OUT/dropdown-open.png"
+cliclick kp:esc >/dev/null 2>&1 || true
 
 # Keep the SwiftBar and TCC diagnostics for the report.
 sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db" 'select service,client,auth_value from access' >"$OUT/tcc-user.txt" 2>&1 || true
