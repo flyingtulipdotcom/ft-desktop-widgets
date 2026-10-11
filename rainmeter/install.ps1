@@ -11,9 +11,13 @@ if (-not $rainmeter) {
 }
 $url = $fallback
 try {
-  $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{ "User-Agent" = "ft-desktop-widgets-installer" } -UseBasicParsing
-  $asset = $release.assets | Where-Object { $_.name -like "*.rmskin" } | Select-Object -First 1
-  if ($asset) { $url = $asset.browser_download_url }
+  # the newest release that carries a .rmskin (the repository also publishes other apps' releases)
+  $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases?per_page=30" -Headers @{ "User-Agent" = "ft-desktop-widgets-installer" } -UseBasicParsing
+  foreach ($release in $releases) {
+    if ($release.draft -or $release.prerelease) { continue }
+    $asset = $release.assets | Where-Object { $_.name -like "*.rmskin" } | Select-Object -First 1
+    if ($asset) { $url = $asset.browser_download_url; break }
+  }
 } catch {
   Write-Host "Could not look up the latest release, using v1.4.0."
 }
