@@ -58,7 +58,41 @@ Start-Process -FilePath $rm
 Log "waiting for the data"
 Start-Sleep -Seconds 35
 
+# The skin's own window, drawn by PrintWindow (works for layered windows even when the desktop capture is blank).
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
+using System; using System.Text; using System.Drawing; using System.Collections.Generic; using System.Runtime.InteropServices;
+public static class Win {
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
+  [DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr dc, uint flags);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  public static List<string> List() {
+    var o = new List<string>();
+    EnumWindows((h, l) => { if (IsWindowVisible(h)) { var c = new StringBuilder(256); var t = new StringBuilder(256); GetClassName(h, c, 256); GetWindowText(h, t, 256); RECT r; GetWindowRect(h, out r);
+      o.Add(c + " | " + t + " | " + r.L + "," + r.T + " " + (r.R - r.L) + "x" + (r.B - r.T)); } return true; }, IntPtr.Zero);
+    return o;
+  }
+  public static Bitmap Skin() {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((h, l) => { var c = new StringBuilder(256); GetClassName(h, c, 256); if (c.ToString() == "RainmeterMeterWindow" && IsWindowVisible(h)) { found = h; return false; } return true; }, IntPtr.Zero);
+    if (found == IntPtr.Zero) return null;
+    RECT r; GetWindowRect(found, out r);
+    var bmp = new Bitmap(Math.Max(1, r.R - r.L), Math.Max(1, r.B - r.T), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+    using (var g = Graphics.FromImage(bmp)) { g.Clear(Color.FromArgb(255, 32, 36, 44)); var dc = g.GetHdc(); PrintWindow(found, dc, 2); g.ReleaseHdc(dc); }
+    return bmp;
+  }
+}
+"@
+[Win]::List() | Set-Content (Join-Path $out "windows.txt")
+
 function Shot($name) {
+  $skin = [Win]::Skin()
+  if ($skin) { $skin.Save((Join-Path $out "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png); $skin.Dispose(); Log "shot $name (skin window)" }
+  else { Log "no skin window found" }
   $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
   $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
   $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -67,9 +101,8 @@ function Shot($name) {
   $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size, $op)
   $w = [Math]::Min(460, $b.Width - 10); $h = [Math]::Min(900, $b.Height - 10)
   $crop = $bmp.Clone((New-Object System.Drawing.Rectangle 10, 10, $w, $h), $bmp.PixelFormat)
-  $crop.Save((Join-Path $out "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+  $crop.Save((Join-Path $out "$name-desktop.png"), [System.Drawing.Imaging.ImageFormat]::Png)
   $g.Dispose(); $bmp.Dispose(); $crop.Dispose()
-  Log "shot $name"
 }
 Shot "rainmeter-account"
 foreach ($tab in @("market", "positions")) {
