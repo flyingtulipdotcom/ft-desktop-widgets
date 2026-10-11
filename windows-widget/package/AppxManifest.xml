@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 com rescap">
+
+  <!-- {{PUBLISHER}} and {{VERSION}} are filled in by build/package.ps1: the publisher must equal the subject of the signing certificate. -->
+  <Identity Name="FlyingTulip.WindowsWidget" Publisher="{{PUBLISHER}}" Version="{{VERSION}}" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Flying Tulip widget</DisplayName>
+    <PublisherDisplayName>Flying Tulip</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
+    <PackageDependency Name="Microsoft.WindowsAppRuntime.1.8" MinVersion="8000.0.0.0"
+                       Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App" Executable="FlyingTulip.WidgetProvider.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements DisplayName="Flying Tulip widget" Description="Flying Tulip on the Windows 11 Widgets Board"
+                          BackgroundColor="transparent" Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png" />
+      <Extensions>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:ExeServer Executable="FlyingTulip.WidgetProvider.exe" Arguments="-RegisterProcessAsComServer" DisplayName="Flying Tulip widget provider">
+              <com:Class Id="7c1b3f0e-5d2a-4a6e-9a77-2f1d6e4b8c10" DisplayName="Flying Tulip widget provider" />
+            </com:ExeServer>
+          </com:ComServer>
+        </com:Extension>
+        <uap3:Extension Category="windows.appExtension">
+          <uap3:AppExtension Name="com.microsoft.windows.widgets" DisplayName="Flying Tulip" Id="FlyingTulip" PublicFolder="Public">
+            <uap3:Properties>
+              <WidgetProvider>
+                <ProgId>FlyingTulip.WidgetProvider</ProgId>
+                <Activation>
+                  <CreateInstance ClassId="7c1b3f0e-5d2a-4a6e-9a77-2f1d6e4b8c10" />
+                </Activation>
+                <TrustedPackageFamilyNames>
+                  <TrustedPackageFamilyName>MicrosoftWindows.Client.WebExperience_cw5n1h2txyewy</TrustedPackageFamilyName>
+                </TrustedPackageFamilyNames>
+                <Definitions>
+                  <Definition Id="FlyingTulip" DisplayName="Flying Tulip"
+                              Description="FT market price, 24h application fees and, for optional wallets, health factor, PnL, FT earned, points, ftPUT gain and positions. Public API only."
+                              AllowMultiple="true" IsCustomizable="true">
+                    <Capabilities>
+                      <Capability><Size Name="small" /></Capability>
+                      <Capability><Size Name="medium" /></Capability>
+                      <Capability><Size Name="large" /></Capability>
+                    </Capabilities>
+                    <ThemeResources>
+                      <Icons>
+                        <Light Path="ProviderAssets\Icon.png" />
+                        <Dark Path="ProviderAssets\Icon.png" />
+                      </Icons>
+                      <Screenshots>
+                        <Screenshot Path="ProviderAssets\Screenshot.png" DisplayAltText="Flying Tulip widget: market, account and positions tabs" />
+                      </Screenshots>
+                    </ThemeResources>
+                  </Definition>
+                </Definitions>
+              </WidgetProvider>
+            </uap3:Properties>
+          </uap3:AppExtension>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <Capability Name="internetClient" />
+  </Capabilities>
+</Package>

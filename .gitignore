@@ -10,3 +10,8 @@ rainmeter/Skins/FlyingTulip/@Resources/UsageStats-os.txt
 macos/.build/
 macos/dist/
 out-native/
+
+windows-widget/**/bin/
+windows-widget/**/obj/
+windows-widget/out/
+windows-widget/preview/node_modules/

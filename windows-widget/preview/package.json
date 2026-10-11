@@ -1,0 +1,12 @@
+{
+  "name": "ft-windows-widget-preview",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Renders the widget's Adaptive Card templates with the official Adaptive Cards JavaScript renderer",
+  "type": "module",
+  "dependencies": {
+    "adaptivecards": "3.0.5",
+    "adaptivecards-templating": "2.3.1",
+    "playwright-core": "1.49.1"
+  }
+}
