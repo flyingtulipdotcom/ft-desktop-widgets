@@ -50,8 +50,15 @@ shot() { screencapture -x "$OUT/$1.png" 2>>"$OUT/screencapture.log" || log "scre
 log "screen: $(system_profiler SPDisplaysDataType 2>/dev/null | grep -i resolution | head -1)"
 shot desktop-before
 
-open -a SwiftBar
-sleep 3
+xattr -dr com.apple.quarantine /Applications/SwiftBar.app 2>&1 | tee -a "$OUT/swiftbar-launch.log" || true
+open -a SwiftBar >>"$OUT/swiftbar-launch.log" 2>&1 || log "open failed"
+sleep 5
+if ! pgrep -x SwiftBar >/dev/null; then
+  log "SwiftBar not running after open, starting the binary directly"
+  nohup /Applications/SwiftBar.app/Contents/MacOS/SwiftBar >>"$OUT/swiftbar-run.log" 2>&1 &
+  sleep 5
+fi
+ls ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i swiftbar >>"$OUT/swiftbar-launch.log" || true
 log "waiting for the plugin to render"
 for i in $(seq 1 30); do
   pgrep -x SwiftBar >/dev/null && ls "$HOME/Library/Caches/com.flyingtulip.menubar" >/dev/null 2>&1 && break
