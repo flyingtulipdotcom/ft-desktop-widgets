@@ -337,14 +337,15 @@ local function lowestHf(chains)
   return best
 end
 
--- Total FT earned: sftUSD yield (claimed + pending) plus Lend FT rewards (received + pending), all chains.
--- total is nil when any piece is unknown or a section errored.
+-- FT earned, all time and all chains: sftUSD yield (claimed + pending) plus Lend FT rewards (received + pending).
+-- It is what the wallet's sftUSD staking and Lend supply have paid over time, so it does not follow the wallet's
+-- current size. totalFt is nil when any piece is unknown or a section errored. The parts are kept for the tooltip.
 local function parseRewards(body)
   local d = body and body.success ~= false and body.data
   if not d or not d.chains then return nil end
   local errs = d.sectionErrors or {}
   local known = not errs.staking and not errs.lend
-  local total, claimable = 0, 0
+  local r = { totalFt = 0, claimableFt = 0, sftClaimed = 0, sftPending = 0, lendReceived = 0, lendPending = 0, chains = {} }
   for _, c in ipairs(d.chains) do
     local st, lm = c.staking, c.lend and c.lend.userMetrics
     local pending, claimed
@@ -354,22 +355,27 @@ local function parseRewards(body)
     else
       if errs.staking then pending, claimed = nil, nil else pending, claimed = 0, 0 end
     end
-    local sft = (pending and claimed) and (pending + claimed) or nil
-    local lend = 0
-    if errs.lend then lend = nil end
+    local received, lpending = 0, 0
+    if errs.lend then received, lpending = nil, nil end
     if c.lend then
       local fr = lm and lm.ftRewards
-      if lm and lm.ftRewardsError then lend = nil
-      elseif fr then
-        local r, p = rawUnits(fr.receivedFtRaw, 18), rawUnits(fr.pendingFtRaw, 18)
-        lend = (r and p) and (r + p) or nil
-      elseif not lm then lend = nil
-      else lend = 0 end
+      if lm and lm.ftRewardsError then received, lpending = nil, nil
+      elseif fr then received, lpending = rawUnits(fr.receivedFtRaw, 18), rawUnits(fr.pendingFtRaw, 18)
+      elseif not lm then received, lpending = nil, nil
+      else received, lpending = 0, 0 end
     end
-    if pending then claimable = claimable + pending end
-    if sft == nil or lend == nil then known = false else total = total + sft + lend end
+    if pending then r.claimableFt = r.claimableFt + pending end
+    if not (pending and claimed and received and lpending) then known = false
+    else
+      r.sftClaimed, r.sftPending = r.sftClaimed + claimed, r.sftPending + pending
+      r.lendReceived, r.lendPending = r.lendReceived + received, r.lendPending + lpending
+      local id = tonumber(c.chainId)
+      r.chains[#r.chains + 1] = { chainId = id, name = HF_CHAINS[id] or tostring(c.chainId), sft = claimed + pending, lend = received + lpending }
+    end
   end
-  return { totalFt = known and total or nil, claimableFt = claimable }
+  r.sftFt, r.lendFt = r.sftClaimed + r.sftPending, r.lendReceived + r.lendPending
+  r.totalFt = known and (r.sftFt + r.lendFt) or nil
+  return r
 end
 
 -- ftPUT: cost basis = sum(current_capital * strike), FT held = current_ft + withdrawn_ft. nil with no PUTs.
@@ -398,16 +404,46 @@ local function putGain(puts, ftPrice)
   return { gainUsd = gain, gainPct = puts.costUsd > 0 and gain / puts.costUsd * 100 or nil }
 end
 
+-- Points: the all-chains total (what the leaderboard ranks) plus each chain's share. flyingtulip.com/rewards
+-- shows ONE chain at a time in its big number (Sonic first), with the all-networks total in small print under it.
 local function parsePoints(body)
   local chains = body and body.data and body.data.chains
   if not chains then return nil end
+  local total, per = nil, {}
   for _, c in ipairs(chains) do
-    if c.isAllChains and c.userMetrics then
-      local t = num(c.userMetrics.totalPoints)
-      if t then return { total = t } end
+    local v = c.userMetrics and num(c.userMetrics.totalPoints)
+    if c.isAllChains then
+      if v then total = v end
+    elseif v and v > 0 then
+      local id = c.chainData and tonumber(c.chainData.id)
+      per[#per + 1] = { chainId = id, name = (id and HF_CHAINS[id]) or (c.chainData and c.chainData.name) or "?", points = v }
     end
   end
-  return nil
+  if not total then return nil end
+  table.sort(per, function(a, b) return a.points > b.points end)
+  return { total = total, chains = per }
+end
+
+-- tooltip texts (plain ASCII: no # [ ] which Rainmeter would read as variables or measures)
+local function earnedTip(r)
+  if not r then return "" end
+  local by = {}
+  for _, c in ipairs(r.chains or {}) do
+    if c.sft + c.lend >= 0.005 then by[#by + 1] = c.name .. " " .. fmtFt(c.sft + c.lend) end
+  end
+  return "All time, all chains. sftUSD yield " .. fmtFt(r.sftFt) .. " FT (claimed " .. fmtFt(r.sftClaimed) .. ", pending " ..
+    fmtFt(r.sftPending) .. "). Lend FT rewards " .. fmtFt(r.lendFt) .. " FT (received " .. fmtFt(r.lendReceived) ..
+    ", pending " .. fmtFt(r.lendPending) .. ")." .. (#by > 0 and (" By chain: " .. table.concat(by, ", ") .. ".") or "") ..
+    " This is what the wallet's sftUSD staking and Lend supply paid over time, so a smaller wallet can show more" ..
+    " than a larger one. FT held in ftPUTs is not counted."
+end
+local function pointsTip(p, r)
+  if not p then return "" end
+  local by = {}
+  for _, c in ipairs(p.chains or {}) do by[#by + 1] = c.name .. " " .. fmtPoints(c.points) end
+  return "Total over all chains" .. (#by > 0 and (": " .. table.concat(by, ", ")) or "") .. "." ..
+    (r and (" Leaderboard rank " .. thousands(r.rank) .. " of " .. thousands(r.total) .. ", all chains.") or "") ..
+    " flyingtulip.com/rewards shows one chain at a time, with the all-networks total under it."
 end
 
 local function rankInPage(body, wallet, myPoints)
@@ -556,6 +592,8 @@ local function setText(meter, text, color)
   set(meter, "Text", clean(text))
   if color then set(meter, "FontColor", color) end
 end
+-- hover text (an empty value removes the option, so no stale tooltip stays behind)
+local function tip(meter, text) set(meter, "ToolTipText", clean(text)) end
 local function link(meter, url) set(meter, "LeftMouseUpAction", '["' .. url .. '"]') end
 local function dim(color) return (color:gsub(",%d+$", ",120")) end
 
@@ -745,9 +783,10 @@ function M.render()
     for _, m in ipairs({ "MeterHfVal", "MeterPnlVal", "MeterEarnVal", "MeterPointsVal", "MeterPutVal", "MeterPosHead" }) do setText(m, "") end
     for i = 1, POS_ROWS do setText("MeterPos" .. i, "") end
     for _, m in ipairs({ "MeterHfLbl", "MeterPnlLbl", "MeterEarnLbl", "MeterPointsLbl", "MeterPutLbl" }) do setText(m, "") end
+    for _, m in ipairs({ "MeterEarnLbl", "MeterEarnVal", "MeterPointsLbl", "MeterPointsVal" }) do tip(m, "") end
   else
     setText("MeterAccountHint", "")
-    local lbl = { MeterHfLbl = "Health factor", MeterPnlLbl = "PnL (unrealized)", MeterEarnLbl = "FT earned", MeterPointsLbl = "Points", MeterPutLbl = "ftPUT gain" }
+    local lbl = { MeterHfLbl = "Health factor", MeterPnlLbl = "PnL (unrealized)", MeterEarnLbl = "FT earned, all time", MeterPointsLbl = "Points, all chains", MeterPutLbl = "ftPUT gain" }
     for m, v in pairs(lbl) do setText(m, v, C_FAINT) end
     local l = lendList()
     if l then
@@ -761,10 +800,12 @@ function M.render()
     if S.rewards then
       setText("MeterEarnVal", fmtFt(S.rewards.totalFt) .. " FT", C_TEXT)
     else setText("MeterEarnVal", "unavailable", C_FAINT) end
+    tip("MeterEarnVal", earnedTip(S.rewards)); tip("MeterEarnLbl", earnedTip(S.rewards))
     if S.points then
       local r = S.rank
-      setText("MeterPointsVal", fmtPoints(S.points.total) .. (r and ("  rank " .. thousands(r.rank) .. " of " .. thousands(r.total)) or ""), C_TEXT)
+      setText("MeterPointsVal", fmtPoints(S.points.total) .. (r and ("  rank " .. thousands(r.rank)) or ""), C_TEXT)
     else setText("MeterPointsVal", "unavailable", C_FAINT) end
+    tip("MeterPointsVal", pointsTip(S.points, S.rank)); tip("MeterPointsLbl", pointsTip(S.points, S.rank))
     if S.puts then
       local g = putGain(S.puts, S.price and S.price.price)
       if g and g.gainPct then setText("MeterPutVal", fmtPct(g.gainPct) .. "  " .. fmtSignedUsd(g.gainUsd), deltaColor(g.gainUsd))
@@ -1009,5 +1050,6 @@ M._parse = { fees = parseFees, price = parsePrice, lend = parseLend, summary = p
 M._fmt = { usd = fmtUsd, signed = fmtSignedUsd, price = fmtPrice, hf = fmtHf, pct = fmtPct, ft = fmtFt, points = fmtPoints,
   thousands = thousands, wallet = normalizeWallet, rawUnits = rawUnits }
 M._alert = { levelFor = levelFor, decideNotify = decideNotify, notifyText = notifyText, threshold = threshold }
+M._tips = { earned = earnedTip, points = pointsTip }
 M._lowestHf, M._mergeChains, M._putGain, M._feesDayOverDay = lowestHf, mergeChains, putGain, feesDayOverDay
 FT_TEST = M

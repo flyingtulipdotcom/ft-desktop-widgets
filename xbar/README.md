@@ -61,9 +61,15 @@ shows every setting twice, delete the `<swiftbar.environment>` line.
   two finished days.
 - **HF**: lowest `healthFactor` among your chains that carry debt (`/mm/lend?user=`). No debt shows `∞`.
 - **PnL**: sum of `unrealizedPnl` over chains (`/mm/spot/account/summary`).
-- **FT earned**: sftUSD yield (claimed + pending) plus Lend FT rewards (received + pending), all chains
-  (`/account/dashboard?view=rewards`).
-- **Points / rank**: `/points` total and the rank found in `/points/leaderboard` (searched at most every 10 minutes).
+- **FT earned**: all time and all chains. sftUSD yield (claimed + pending) plus Lend FT rewards (received + pending)
+  (`/account/dashboard?view=rewards`). The dropdown splits it by source and by chain. It is what the wallet's sftUSD
+  staking and Lend supply have paid out over time, so it does not follow the wallet's current size: a small wallet
+  that staked sftUSD for months can show more than a large wallet that only started supplying Lend last week. FT held
+  in ftPUTs is not counted.
+- **Points / rank**: the all-chains total from `/points` (the same number the leaderboard ranks), split per chain in
+  the dropdown, and the all-chains rank found in `/points/leaderboard` (searched at most every 10 minutes). The big
+  number on flyingtulip.com/rewards is one chain at a time (the chain picker in the site header), and the all-networks
+  total is the small line under it.
 - **ftPUT gain**: from `/tge/ftPUT/user/<wallet>`: FT held x FT market price minus cost basis, also as a percentage.
 - **Positions**: `/mm/spot/account/positions` per chain.
 

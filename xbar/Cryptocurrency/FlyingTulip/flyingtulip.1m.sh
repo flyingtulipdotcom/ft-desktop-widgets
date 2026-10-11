@@ -6,7 +6,7 @@
 #
 # Metadata (xbar):
 #  <xbar.title>Flying Tulip</xbar.title>
-#  <xbar.version>v1.0.0</xbar.version>
+#  <xbar.version>v1.0.2</xbar.version>
 #  <xbar.author>Flying Tulip</xbar.author>
 #  <xbar.author.github>flyingtulipdotcom</xbar.author.github>
 #  <xbar.desc>FT market price, 24h application fees and, for an optional wallet, health factor with liquidation alerts, PnL, FT earned, points, ftPUT gain and positions. Public API only.</xbar.desc>
@@ -226,35 +226,45 @@ function rawUnits(s, dec) {
 }
 function rawFt(s) { return rawUnits(s, 18); }
 
-// /account/dashboard?view=rewards -> total FT earned (sftUSD yield claimed+pending, plus Lend FT rewards
-// received+pending), summed over chains. NaN total when any piece is unknown or a section errored.
+// /account/dashboard?view=rewards -> FT earned, all time and all chains: sftUSD yield (claimed + pending) plus
+// Lend FT rewards (received + pending). It is what the wallet's sftUSD staking and Lend supply have paid over time,
+// so it does not follow the wallet's current size. NaN total when any piece is unknown or a section errored.
 function parseRewards(body) {
   var d = body && body.success !== false && body.data;
   if (!d || !d.chains) return null;
   var errs = d.sectionErrors || {};
   var stakingFailed = !!errs.staking, lendFailed = !!errs.lend;
-  var total = 0, known = !stakingFailed && !lendFailed, claimable = 0;
+  var known = !stakingFailed && !lendFailed;
+  var r = { totalFt: NaN, claimableFt: 0, sftClaimed: 0, sftPending: 0, lendReceived: 0, lendPending: 0, chains: [] };
   for (var i = 0; i < d.chains.length; i++) {
     var c = d.chains[i], st = c.staking, lm = c.lend && c.lend.userMetrics;
     var pendingSft = st ? rawFt(st.pending_yield_ft) : (stakingFailed ? NaN : 0);
     var claimedSft = st ? ((st.claimed_yield_indexed_through_block && !st.claimed_yield_stale) ? rawFt(st.claimed_yield_ft) : NaN)
                         : (stakingFailed ? NaN : 0);
-    var sft = isFinite(pendingSft) && isFinite(claimedSft) ? pendingSft + claimedSft : NaN;
-    var lend = lendFailed ? NaN : 0;
+    var rec = lendFailed ? NaN : 0, pen = lendFailed ? NaN : 0;
     if (c.lend) {
       var fr = lm && lm.ftRewards;
-      if (lm && lm.ftRewardsError) lend = NaN;
-      else if (fr) {
-        var r = rawFt(fr.receivedFtRaw), p = rawFt(fr.pendingFtRaw);
-        lend = isFinite(r) && isFinite(p) ? r + p : NaN;
-      } else if (!lm) lend = NaN;
-      else lend = 0;
+      if (lm && lm.ftRewardsError) rec = pen = NaN;
+      else if (fr) { rec = rawFt(fr.receivedFtRaw); pen = rawFt(fr.pendingFtRaw); }
+      else if (!lm) rec = pen = NaN;
+      else rec = pen = 0;
     }
-    if (isFinite(pendingSft)) claimable += pendingSft;
-    if (!isFinite(sft) || !isFinite(lend)) known = false;
-    else total += sft + lend;
+    if (isFinite(pendingSft)) r.claimableFt += pendingSft;
+    if (!isFinite(pendingSft) || !isFinite(claimedSft) || !isFinite(rec) || !isFinite(pen)) { known = false; continue; }
+    r.sftClaimed += claimedSft; r.sftPending += pendingSft; r.lendReceived += rec; r.lendPending += pen;
+    var id = Number(c.chainId);
+    r.chains.push({ chainId: id, name: HF_CHAINS[id] || String(c.chainId), sft: claimedSft + pendingSft, lend: rec + pen });
   }
-  return { totalFt: known ? total : NaN, claimableFt: claimable };
+  r.sftFt = r.sftClaimed + r.sftPending; r.lendFt = r.lendReceived + r.lendPending;
+  r.totalFt = known ? r.sftFt + r.lendFt : NaN;
+  return r;
+}
+// Chains that earned something, as "Sonic 95.4, Ethereum 0.06".
+function earnedByChain(r) {
+  var out = [];
+  for (var i = 0; r && r.chains && i < r.chains.length; i++)
+    if (r.chains[i].sft + r.chains[i].lend >= 0.005) out.push(r.chains[i].name + " " + fmtFt(r.chains[i].sft + r.chains[i].lend));
+  return out.join(", ");
 }
 
 // /tge/ftPUT/user/<wallet>: cost basis = sum(current_capital * strike), FT held = current_ft + withdrawn_ft.
@@ -288,15 +298,22 @@ function putGain(puts, ftPrice) {
   return { valueUsd: value, gainUsd: gain, gainPct: puts.costUsd > 0 ? gain / puts.costUsd * 100 : NaN };
 }
 
+// /points?walletAddress= -> the all-chains total (what the leaderboard ranks) plus each chain's share, largest first.
+// flyingtulip.com/rewards shows ONE chain at a time in its big number, with the all-networks total under it.
 function parsePoints(body) {
   var chains = body && body.data && body.data.chains;
   if (!chains) return null;
-  var all = null;
-  for (var i = 0; i < chains.length; i++) if (chains[i].isAllChains) all = chains[i];
-  if (!all || !all.userMetrics) return null;
-  var total = num(all.userMetrics.totalPoints);
+  var total = NaN, per = [];
+  for (var i = 0; i < chains.length; i++) {
+    var c = chains[i], v = c.userMetrics ? num(c.userMetrics.totalPoints) : NaN;
+    if (c.isAllChains) { total = v; continue; }
+    if (!(v > 0)) continue;
+    var id = c.chainData ? Number(c.chainData.id) : NaN;
+    per.push({ chainId: id, name: HF_CHAINS[id] || (c.chainData && c.chainData.name) || "?", points: v });
+  }
   if (!isFinite(total)) return null;
-  return { total: total };
+  per.sort(function (a, b) { return b.points - a.points; });
+  return { total: total, chains: per };
 }
 
 // Leaderboard page -> {found, rank, dir, total}. dir -1: wallet is on an earlier page, +1 later.
@@ -800,14 +817,25 @@ function render(d, age, cfg, nowMs, selfPath) {
     linkFrom(L, ac0, PAGES.portfolio);
     ac0 = L.length;
     if (d.rewards) {
-      L.push(row("FT earned", fmtFt(d.rewards.totalFt) + " FT"));
-      if (d.rewards.claimableFt > 0) L.push(line("--" + fmtFt(d.rewards.claimableFt) + " FT claimable (sftUSD yield)", { size: 11 }));
+      var rw = d.rewards;
+      L.push(row("FT earned", fmtFt(rw.totalFt) + " FT  all time"));
+      if (isFinite(rw.sftFt)) {
+        L.push(line("--sftUSD yield     " + fmtFt(rw.sftFt) + " FT  (claimed " + fmtFt(rw.sftClaimed) + ", pending " + fmtFt(rw.sftPending) + ")", { size: 11, font: "Menlo" }));
+        L.push(line("--Lend FT rewards  " + fmtFt(rw.lendFt) + " FT  (received " + fmtFt(rw.lendReceived) + ", pending " + fmtFt(rw.lendPending) + ")", { size: 11, font: "Menlo" }));
+        var bc = earnedByChain(rw);
+        if (bc) L.push(line("--By chain: " + bc, { size: 11 }));
+      }
+      if (rw.claimableFt > 0) L.push(line("--" + fmtFt(rw.claimableFt) + " FT claimable (sftUSD yield)", { size: 11 }));
+      L.push(line("--All time and all chains: what this wallet's sftUSD staking and Lend supply paid out,", { size: 11, color: C_FAINT }));
+      L.push(line("--so it does not follow the wallet's current size. FT held in ftPUTs is not counted.", { size: 11, color: C_FAINT }));
     } else L.push(row("FT earned", "— unavailable"));
     linkFrom(L, ac0, PAGES.rewards);
     ac0 = L.length;
     if (d.points) {
-      var rk = d.rank;
-      L.push(row("Points", fmtPoints(d.points.total) + (rk ? "  rank #" + thousands(rk.rank) + " of " + thousands(rk.total) : "")));
+      var rk = d.rank, pc = d.points.chains || [];
+      L.push(row("Points", fmtPoints(d.points.total) + "  all chains" + (rk ? "  rank #" + thousands(rk.rank) + " of " + thousands(rk.total) : "")));
+      for (var pi = 0; pi < pc.length; pi++) L.push(line("--" + padR(pc[pi].name, 10) + fmtPoints(pc[pi].points), { size: 11, font: "Menlo" }));
+      L.push(line("--flyingtulip.com/rewards shows one chain at a time, the all-networks total is under it", { size: 11, color: C_FAINT }));
     } else L.push(row("Points", "— unavailable"));
     linkFrom(L, ac0, PAGES.points);
     ac0 = L.length;
@@ -978,7 +1006,7 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     main: main, buildConfig: buildConfig, render: render, loadSources: loadSources, sourceSpecs: sourceSpecs, findRank: findRank,
     parseFees: parseFees, parsePrice: parsePrice, parseLend: parseLend, parseSummary: parseSummary, mergeChains: mergeChains,
-    lowestHf: lowestHf, parseRewards: parseRewards, parsePuts: parsePuts, putGain: putGain, parsePoints: parsePoints,
+    lowestHf: lowestHf, parseRewards: parseRewards, earnedByChain: earnedByChain, parsePuts: parsePuts, putGain: putGain, parsePoints: parsePoints,
     rankInPage: rankInPage, parsePositions: parsePositions, parseFeesSeries: parseFeesSeries, parseKlines: parseKlines,
     feesDayOverDay: feesDayOverDay, levelFor: levelFor, decideNotify: decideNotify, notifyText: notifyText,
     parseThreshold: parseThreshold, fmtUsd: fmtUsd, fmtSignedUsd: fmtSignedUsd, fmtPrice: fmtPrice, fmtHf: fmtHf, fmtPct: fmtPct,

@@ -199,6 +199,45 @@ ok("rewards: total FT, unknown when a section errored", function()
   assert(math.abs(r.totalFt - 153) < 1e-9); assert(math.abs(r.claimableFt - 3) < 1e-9)
   eq(t._parse.rewards(t.jsonDecode('{"success":true,"data":{"sectionErrors":{"lend":true},"chains":[{"chainId":146}]}}')).totalFt, nil)
 end)
+-- Two real wallet shapes (addresses removed): the smaller one claimed sftUSD yield months ago, the larger one only
+-- supplies Lend and earns small rewards whose raw amounts have 17 digits (0.01 to 0.1 FT).
+local SMALL_REWARDS = '{"success":true,"data":{"chains":[' ..
+  '{"chainId":1,"staking":{"pending_yield_ft":"0","claimed_yield_ft":"0","claimed_yield_indexed_through_block":26165977},"lend":{"userMetrics":{"ftRewards":null,"ftRewardsError":null}}},' ..
+  '{"chainId":146,"staking":{"pending_yield_ft":"0","claimed_yield_ft":"95386787178560501045","claimed_yield_indexed_through_block":80722469},"lend":{"userMetrics":{"ftRewards":null}}}]}}'
+local LARGE_REWARDS = '{"success":true,"data":{"chains":[' ..
+  '{"chainId":1,"staking":{"pending_yield_ft":"0","claimed_yield_ft":"0","claimed_yield_indexed_through_block":26165977},"lend":{"userMetrics":{"ftRewards":{"receivedFtRaw":"0","pendingFtRaw":"60167126473248989"}}}},' ..
+  '{"chainId":146,"staking":{"pending_yield_ft":"0","claimed_yield_ft":"0","claimed_yield_indexed_through_block":80722469},"lend":{"userMetrics":{"ftRewards":{"receivedFtRaw":"743020047575476813","pendingFtRaw":"59654073282058744"}}}}]}}'
+local POINTS_2CHAINS = '{"data":{"chains":[' ..
+  '{"chainData":{"id":146,"name":"Sonic"},"isAllChains":false,"userMetrics":{"totalPoints":45757.02690673988}},' ..
+  '{"chainData":{"id":1,"name":"Ethereum"},"isAllChains":false,"userMetrics":{"totalPoints":616132.7877936237}},' ..
+  '{"chainData":{"id":56,"name":"BNB Smart Chain"},"isAllChains":false,"userMetrics":{"totalPoints":0}},' ..
+  '{"chainData":null,"isAllChains":true,"userMetrics":{"totalPoints":661889.8147003637}}]}}'
+ok("rewards: the breakdown explains a smaller wallet with more FT earned (sftUSD yield) than a larger one (Lend)", function()
+  local t = T(boot({}))
+  local s = t._parse.rewards(t.jsonDecode(SMALL_REWARDS))
+  assert(math.abs(s.totalFt - 95.386787178560501) < 1e-9); assert(math.abs(s.sftClaimed - s.totalFt) < 1e-12); eq(s.lendFt, 0)
+  local l = t._parse.rewards(t.jsonDecode(LARGE_REWARDS))
+  assert(math.abs(l.totalFt - (0.060167126473248989 + 0.743020047575476813 + 0.059654073282058744)) < 1e-12, l.totalFt)
+  assert(math.abs(l.lendPending - 0.119821199755307733) < 1e-12); eq(l.sftFt, 0)
+  eq(t._fmt.ft(l.totalFt), "0.86"); eq(t._fmt.ft(s.totalFt), "95.4")
+  local tip = t._tips.earned(s)
+  has(tip, "sftUSD yield 95.4 FT (claimed 95.4, pending 0)"); has(tip, "Lend FT rewards 0 FT"); has(tip, "By chain: Sonic 95.4.")
+  has(t._tips.earned(l), "By chain: Ethereum 0.06, Sonic 0.80.")
+end)
+ok("points: all-chains total plus each chain, largest first", function()
+  local t = T(boot({}))
+  local p = t._parse.points(t.jsonDecode(POINTS_2CHAINS))
+  assert(math.abs(p.total - 661889.8147003637) < 1e-6); eq(#p.chains, 2); eq(p.chains[1].name, "Ethereum"); eq(p.chains[2].name, "Sonic")
+  local tip = t._tips.points(p, { rank = 1715, total = 6789 })
+  has(tip, "Total over all chains: Ethereum 616K, Sonic 45.8K."); has(tip, "rank 1,715 of 6,789"); has(tip, "one chain at a time")
+end)
+ok("FT earned and points rows say what they cover, with the breakdown on hover", function()
+  local sk = boot({ Wallet = DEAD }, { rewards = SMALL_REWARDS, points = POINTS_2CHAINS }); settle(sk); noErrors(sk)
+  eq(sk:text("MeterEarnLbl"), "FT earned, all time"); eq(sk:text("MeterPointsLbl"), "Points, all chains")
+  has(sk:text("MeterEarnVal"), "95.4 FT"); has(sk:option("MeterEarnVal", "ToolTipText"), "sftUSD yield 95.4 FT")
+  has(sk:text("MeterPointsVal"), "662K"); has(sk:option("MeterPointsLbl", "ToolTipText"), "Ethereum 616K, Sonic 45.8K")
+  eq(sk:option("MeterEarnVal", "ToolTipWidth"), "320")
+end)
 ok("lend: no debt is infinity, lowest across chains", function()
   local t = T(boot({}))
   local l = t._mergeChains({ t._parse.lend(t.jsonDecode(lendJson(1.8))), t._parse.lend(t.jsonDecode('{"data":{"chains":[{"chainId":56,"userMetrics":{"totalDebtUsd":50,"healthFactor":1.33}}]}}')) })
@@ -278,7 +317,8 @@ ok("rank search: one forced fetch per page, late answers for an old page ignored
     rank = function(url) local p = tonumber(url:match("page=(%d+)")); pages[#pages + 1] = p; return leaderboard(p, 777, 922000) end })
   settle(sk, 8)
   noErrors(sk)
-  has(sk:text("MeterPointsVal"), "rank 777 of 2,000"); eq(pages[1], 7); eq(pages[2], 2)
+  has(sk:text("MeterPointsVal"), "922K  rank 777"); eq(pages[1], 7); eq(pages[2], 2)
+  has(sk:option("MeterPointsVal", "ToolTipText"), "rank 777 of 2,000, all chains")
   assert(sk.measures.measurerank.disabled, "rank measure disabled again")
   -- a stale page arriving after the search moved on changes nothing
   local before = sk:text("MeterPointsVal"); sk.script.env.OnData("rank"); eq(sk:text("MeterPointsVal"), before)

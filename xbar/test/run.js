@@ -139,6 +139,39 @@ ok("wallet: HF, PnL, FT earned, points+rank, ftPUT, positions", () => {
   assert(out.includes("0x0000…dead".replace("dead", "dEaD").toLowerCase()) || out.includes("0x0000…dead"))
   assert(!out.includes("Wallet is not"))
 })
+// Two real wallet shapes (addresses removed): the smaller one claimed sftUSD yield months ago, the larger one only
+// supplies Lend and earns small rewards whose raw amounts have 17 digits (0.01 to 0.1 FT).
+const SMALL_REWARDS = { success: true, data: { chains: [
+  { chainId: 1, staking: { pending_yield_ft: "0", claimed_yield_ft: "0", claimed_yield_indexed_through_block: 26165977 }, lend: { userMetrics: { ftRewards: null, ftRewardsError: null } } },
+  { chainId: 146, staking: { pending_yield_ft: "0", claimed_yield_ft: "95386787178560501045", claimed_yield_indexed_through_block: 80722469 }, lend: { userMetrics: { ftRewards: null } } }] } }
+const LARGE_REWARDS = { success: true, data: { chains: [
+  { chainId: 1, staking: { pending_yield_ft: "0", claimed_yield_ft: "0", claimed_yield_indexed_through_block: 26165977 }, lend: { userMetrics: { ftRewards: { receivedFtRaw: "0", pendingFtRaw: "60167126473248989" } } } },
+  { chainId: 146, staking: { pending_yield_ft: "0", claimed_yield_ft: "0", claimed_yield_indexed_through_block: 80722469 }, lend: { userMetrics: { ftRewards: { receivedFtRaw: "743020047575476813", pendingFtRaw: "59654073282058744" } } } }] } }
+const POINTS_2CHAINS = { data: { chains: [
+  { chainData: { id: 146, name: "Sonic" }, isAllChains: false, userMetrics: { totalPoints: 45757.02690673988 } },
+  { chainData: { id: 1, name: "Ethereum" }, isAllChains: false, userMetrics: { totalPoints: 616132.7877936237 } },
+  { chainData: { id: 56, name: "BNB Smart Chain" }, isAllChains: false, userMetrics: { totalPoints: 0 } },
+  { chainData: null, isAllChains: true, userMetrics: { totalPoints: 661889.8147003637 } }] } }
+ok("rewards breakdown: a smaller wallet's old sftUSD yield vs a larger wallet's new Lend rewards", () => {
+  const s = M.parseRewards(SMALL_REWARDS), l = M.parseRewards(LARGE_REWARDS)
+  assert(Math.abs(s.totalFt - 95.386787178560501) < 1e-9 && s.lendFt === 0 && Math.abs(s.sftClaimed - s.totalFt) < 1e-12)
+  assert(Math.abs(l.totalFt - (0.060167126473248989 + 0.743020047575476813 + 0.059654073282058744)) < 1e-12, l.totalFt)
+  assert.equal(l.sftFt, 0); assert.equal(M.fmtFt(l.totalFt), "0.86"); assert.equal(M.fmtFt(s.totalFt), "95.4")
+  assert.equal(M.earnedByChain(s), "Sonic 95.4"); assert.equal(M.earnedByChain(l), "Ethereum 0.06, Sonic 0.80")
+})
+ok("points: all-chains total plus each chain, largest first", () => {
+  const p = M.parsePoints(POINTS_2CHAINS)
+  assert(Math.abs(p.total - 661889.8147003637) < 1e-6); assert.deepEqual(p.chains.map(c => c.name), ["Ethereum", "Sonic"])
+})
+ok("FT earned and points rows say what they cover, with the breakdown in the submenu", () => {
+  const w = world(), orig = w.io.fetchAll
+  w.io.fetchAll = urls => orig(urls).map((b, i) => (/account\/dashboard/.test(urls[i]) ? JSON.stringify(SMALL_REWARDS) : /points\?walletAddress/.test(urls[i]) ? JSON.stringify(POINTS_2CHAINS) : b))
+  const out = M.main(w.io, args({ wallet: DEAD }), NOW)
+  assert.deepEqual(validate(out), [])
+  for (const s of ["FT earned   95.4 FT  all time", "--sftUSD yield     95.4 FT  (claimed 95.4, pending 0)", "--Lend FT rewards  0 FT", "--By chain: Sonic 95.4",
+    "Points      662K  all chains", "--Ethereum  616K", "--Sonic     45.8K", "one chain at a time"])
+    assert(out.includes(s), "missing: " + s + "\n" + out)
+})
 ok("every dropdown line links to a real flyingtulip.com page", () => {
   const w = world(), out = M.main(w.io, args({ wallet: DEAD }), NOW), lines = out.split("\n").slice(1).filter(l => l !== "---")
   for (const l of lines) assert(/ (href|shell|refresh)=/.test(l.replace(/^[^|]*\|/, " ")), "no link: " + l)

@@ -15,7 +15,7 @@ f = assert(io.open(dir .. "/@Resources/Settings.inc", "wb")); f:write(s); f:clos
 local fetched = {}
 local function http(url)
   assert(url:match("^https://api%.flyingtulip%.com/[%w%-%._~/%?&=#]*$"), "unexpected URL " .. url)
-  local p = io.popen("curl -s -m 30 -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.1' -H 'Accept: application/json' '" .. url .. "'")
+  local p = io.popen("curl -s -m 30 -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) FlyingTulipRainmeter/1.0.2' -H 'Accept: application/json' '" .. url .. "'")
   local body = p:read("*a"); p:close()
   fetched[#fetched + 1] = string.format("%7d bytes  %s", #body, url)
   if body == "" then return nil end

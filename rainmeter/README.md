@@ -50,7 +50,11 @@ warning is always shown, so the skin still warns you if toasts are blocked (Focu
 ## What each number is
 
 The same as in the macOS plugin: see [../xbar/README.md](../xbar/README.md#what-each-number-is). FT price is the
-FT-ftUSD market price, never the NAV used for accounting.
+FT-ftUSD market price, never the NAV used for accounting. "FT earned, all time" and "Points, all chains" show their
+breakdown when you hover them: FT earned split into sftUSD yield and Lend FT rewards and by chain, points per chain
+and the leaderboard rank. FT earned is what the wallet's sftUSD staking and Lend supply have paid out over time, so a
+smaller wallet can show more than a larger one. flyingtulip.com/rewards shows points for one chain at a time, with the
+all-networks total in the small line under it.
 
 ## How it works
 
