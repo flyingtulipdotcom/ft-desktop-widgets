@@ -2,8 +2,10 @@
 
 A [Rainmeter](https://www.rainmeter.net) skin that puts Flying Tulip on your desktop: FT market price, 24h application
 fees with a 31-day bar chart and a 30-day FT price line and, for the wallets you set, health factor with liquidation
-alerts, PnL, FT earned, points and rank, ftPUT gain and open positions. Dark panel with the Flying Tulip purple accent,
-in three tabs (Market, Account, Positions) so nothing is cut off; the skin remembers the last tab.
+alerts, PnL, FT earned, points and rank, ftPUT gain and open positions. It looks like the Omarchy panel: a dark rounded
+panel, a header with the wallet shown and the switch / settings / refresh buttons, three pill tabs (Market, Account,
+Positions, the last one remembered), rounded cards with health bars per chain, two-column metric cards, the FT earned
+chart with its 7d / 30d / 90d / All range, daily bars, and a footer with the update time and a link to flyingtulip.com.
 
 Data comes only from `https://api.flyingtulip.com`. No keys, no RPC.
 

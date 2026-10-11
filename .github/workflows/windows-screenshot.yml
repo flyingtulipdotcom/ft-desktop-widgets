@@ -1,0 +1,86 @@
+name: Windows widget screenshots
+
+# Runs the Rainmeter skin on a real Windows runner with a public wallet and screenshots each tab.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "rainmeter/**"
+      - ".github/workflows/windows-screenshot.yml"
+      - ".github/scripts/windows-screenshot.ps1"
+  push:
+    branches: [main]
+    paths:
+      - "rainmeter/**"
+      - ".github/workflows/windows-screenshot.yml"
+      - ".github/scripts/windows-screenshot.ps1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  screenshots:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      # A wallet from the public points leaderboard (api.flyingtulip.com/points/leaderboard).
+      FT_CI_WALLET: "0x38A564A38Be5DFb6eF2AB765dA1e4397d03C2D62"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the skin in Rainmeter and screenshot it
+        shell: powershell
+        run: ./.github/scripts/windows-screenshot.ps1
+      - name: Upload screenshots and the Rainmeter log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-widget
+          path: out/
+          if-no-files-found: warn
+      - name: Publish screenshots to the ci-screenshots branch and show them inline
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -u
+          shopt -s nullglob
+          pngs=(out/*.png)
+          [ ${#pngs[@]} -gt 0 ] || { echo "no screenshots"; exit 0; }
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@users.noreply.github.com"
+          pub="$RUNNER_TEMP/pub"
+          rm -rf "$pub"
+          if git ls-remote --exit-code --heads "https://github.com/$REPO" ci-screenshots >/dev/null 2>&1; then
+            git clone --quiet --depth 1 --branch ci-screenshots "https://x-access-token:$GH_TOKEN@github.com/$REPO" "$pub"
+          else
+            git init --quiet -b ci-screenshots "$pub"
+            git -C "$pub" remote add origin "https://x-access-token:$GH_TOKEN@github.com/$REPO"
+          fi
+          mkdir -p "$pub/$RUN_ID"
+          cp "${pngs[@]}" "$pub/$RUN_ID/"
+          git -C "$pub" add "$RUN_ID"
+          git -C "$pub" commit --quiet -m "screenshots for run $RUN_ID"
+          for i in 1 2 3; do
+            git -C "$pub" push --quiet origin ci-screenshots && break
+            git -C "$pub" pull --quiet --rebase origin ci-screenshots
+          done
+          base="https://raw.githubusercontent.com/$REPO/ci-screenshots/$RUN_ID"
+          {
+            echo "## Windows widget screenshots (Rainmeter)"
+            echo
+            for f in rainmeter-account rainmeter-market rainmeter-positions; do
+              [ -f "out/$f.png" ] || continue
+              echo "### $f"
+              echo
+              echo "![$f]($base/$f.png)"
+              echo
+            done
+          } | tee body.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --repo "$REPO" --body-file body.md
+          fi

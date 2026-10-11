@@ -13,6 +13,11 @@ notification is shown on each crossing. The dropdown groups the rest: market (pr
 30-day FT price line), account (health factor per chain, PnL, FT earned, points and rank, ftPUT gain, positions),
 refresh, "Open flyingtulip.com", and "Set wallet...".
 
+The native macOS app in this repository is now the main Mac experience, with the full panel. This plugin stays as the
+lightweight menu-bar option and follows the same look where a dropdown can: the system font (no monospace), the panel's
+purples, health factor bars per chain and charts drawn as small images on a transparent background, and in SwiftBar SF
+Symbols on the main lines and colours that follow light and dark mode.
+
 Data comes only from `https://api.flyingtulip.com`. No keys, no RPC.
 
 ## Install

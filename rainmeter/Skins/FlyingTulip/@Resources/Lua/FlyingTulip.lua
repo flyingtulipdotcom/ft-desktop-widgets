@@ -243,6 +243,15 @@ local function fmtPoints(v)
   if a >= 1e3 then return string.format(a >= 1e5 and "%.0fK" or "%.1fK", a / 1e3) end
   return string.format("%.0f", a)
 end
+local function fmtSize(v)
+  if not v then return "-" end
+  local a = math.abs(v)
+  if a >= 1e6 then return string.format("%.2fM", a / 1e6) end
+  if a >= 1e4 then return string.format("%.1fK", a / 1e3) end
+  if a >= 100 then return string.format("%.0f", a) end
+  if a >= 1 then return string.format("%.2f", a) end
+  return string.format("%.4f", a)
+end
 local function thousands(n)
   local s = string.format("%d", math.floor(n + 0.5))
   local out = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
@@ -382,7 +391,7 @@ end
 local function parsePuts(body)
   local ps = body and body.data and body.data.positions
   if not ps or #ps == 0 then return nil end
-  local cost, held, n = 0, 0, 0
+  local cost, held, n, rows = 0, 0, 0, {}
   for _, p in ipairs(ps) do
     local dec = tonumber(p.token_decimals) or (p.tokenData and tonumber(p.tokenData.decimals)) or 18
     local strike, cap = rawUnits(p.strike, 8), rawUnits(p.current_capital, dec)
@@ -391,10 +400,12 @@ local function parsePuts(body)
       cost = cost + cap * strike
       held = held + ftC + (ftW or 0)
       n = n + 1
+      rows[n] = { nft = tostring(p.nft_id), symbol = tostring(p.token_symbol or (p.tokenData and p.tokenData.symbol) or "?"),
+        costUsd = cap * strike, strike = strike, since = tostring(p.created_at or ""):sub(1, 10) }
     end
   end
   if n == 0 then return nil end
-  return { count = n, costUsd = cost, ftHeld = held }
+  return { count = n, costUsd = cost, ftHeld = held, rows = rows }
 end
 
 -- gain = FT held x FT MARKET price - cost basis (never NAV)
@@ -469,7 +480,7 @@ local function parsePositions(body)
     if size and size > 0 then
       local sym = p.sizeCurrency or tostring(p.symbol or "?"):match("^[^-]+") or "?"
       out[#out + 1] = { symbol = tostring(sym), side = (tostring(p.side or ""):lower() == "short") and "short" or "long",
-        size = size, mark = mark, pnlUsd = num(p.pnlAmount), pnlPct = num(p.pnlPct),
+        size = size, mark = mark, entry = num(p.entryPrice), pnlUsd = num(p.pnlAmount), pnlPct = num(p.pnlPct),
         leverage = num(p.blendedLeverage) or num(p.leverage), valueUsd = mark and size * mark or 0,
         network = p.network or HF_CHAINS[tonumber(p.chainId)] or tostring(p.chainId),
         chainId = tonumber(p.chainId), market = tostring(p.symbol or "") }
@@ -493,10 +504,50 @@ local function parseKlines(body)
   if type(body) ~= "table" or #body == 0 then return nil end
   local out = {}
   for _, k in ipairs(body) do
-    local c = num(k.close)
-    if c then out[#out + 1] = { close = c } end
+    local c, t = num(k.close), num(k.time)
+    if c then out[#out + 1] = { close = c, date = t and os.date("!%m-%d", math.floor(t / 1000)) or "" } end
   end
   return #out > 0 and out or nil
+end
+
+-- /account/rewards/history?address=&range= -> cumulative FT earned (all chains) at UTC day ends, today's partial
+-- sample left out: { {ts, date "mm-dd", earned, claimed}, ... }
+local function parseRewardsSeries(body, nowSec)
+  local pts = body and body.data and body.data.points
+  if type(pts) ~= "table" or #pts == 0 then return nil end
+  local DAY = 86400
+  local today = math.floor((nowSec or os.time()) / DAY) * DAY
+  local out = {}
+  for _, p in ipairs(pts) do
+    local ts = tonumber(p.timestampUnixSeconds)
+    if ts and ts < today and ts % DAY == DAY - 1 then
+      local e = rawUnits(p.totalEarnedFtRaw, 18)
+      if e then out[#out + 1] = { ts = ts, date = os.date("!%m-%d", ts), earned = e, claimed = rawUnits(p.claimedFtRaw, 18) or 0 } end
+    end
+  end
+  table.sort(out, function(a, b) return a.ts < b.ts end)
+  return #out > 0 and out or nil
+end
+-- per-day FT gained from a cumulative series (consecutive days only)
+local function dailyGains(series, key)
+  local out = {}
+  for i = 2, #(series or {}) do
+    if series[i].ts - series[i - 1].ts == 86400 then
+      out[#out + 1] = { date = series[i].date, gain = math.max(0, series[i][key] - series[i - 1][key]) }
+    end
+  end
+  return out
+end
+-- /points/breakdown?walletAddress= -> the positions earning points
+local function parsePointsBreakdown(body)
+  local rows = body and body.data and body.data.pointsBreakdown
+  if type(rows) ~= "table" then return nil end
+  local out = {}
+  for _, r in ipairs(rows) do
+    out[#out + 1] = { label = tostring(r.productLabel or r.product or "?") .. " " .. tostring(r.activityLabel or r.activity or ""),
+      positionUsd = num(r.positionUsd), multiplier = num(r.multiplier) }
+  end
+  return out
 end
 
 -- day-over-day % across finished days (the last bucket is the partial current day)
@@ -564,6 +615,7 @@ local MEASURES = {
   lend = "MeasureLend", lend143 = "MeasureLend143", sum146 = "MeasureSum146", sum1 = "MeasureSum1", sum56 = "MeasureSum56",
   sum143 = "MeasureSum143", rewards = "MeasureRewards", points = "MeasurePoints", pos146 = "MeasurePos146",
   pos1 = "MeasurePos1", pos56 = "MeasurePos56", puts = "MeasurePuts", rank = "MeasureRank", watch = "MeasureWatch",
+  hist = "MeasureHist", ptsRows = "MeasurePtsRows",
   watch143 = "MeasureWatch143"
 }
 -- the parts of /mm/lend the skin never reads: dropped unparsed, which keeps the 500 KB body cheap to decode
@@ -590,7 +642,12 @@ end
 
 local function set(meter, option, value) SK:Bang("!SetOption", meter, option, value) end
 -- API text must not be interpreted as Rainmeter variables/measure references
-local function clean(t) return ((tostring(t):gsub("[#%[%]\r\n]", " "):gsub("\001", INF_REF))) end
+-- "\001" "\002" "\003" are placeholders for the symbols the ANSI script cannot carry: infinity, middle dot, approx
+local DOT, APPROX, HASH = "\002", "\003", "\004"
+local function clean(t)
+  return ((tostring(t):gsub("[#%[%]\r\n]", " "):gsub("\001", INF_REF):gsub("\002", "[\\183]"):gsub("\003", "[\\8776]")
+    :gsub("\004", "[\\35]")))
+end
 local shownText = {} -- what each meter was last given (the layout skips empty detail lines)
 local function setText(meter, text, color)
   shownText[meter] = clean(text)
@@ -608,7 +665,7 @@ local function now() return os.time() end
 -- a wallet count bucket) are sent, by @Resources\UsageStats.ps1 in a hidden PowerShell, fire and forget. Never a
 -- wallet address, balance or position; any 0x address that slips into a value is replaced by ":address" here and
 -- again in the script. Nothing is sent while Analytics=0. Each event name is capped at 30 per hour.
-local SKIN_VERSION = "1.3.0"
+local SKIN_VERSION = "1.4.0"
 local STAT_CAP = 30
 local usage = { hour = -1, counts = {}, errAt = {}, openAt = -1e18, pageAt = -1e18 }
 local ADDRESS = "0x" .. string.rep("%x", 40)
@@ -640,7 +697,7 @@ end
 local ENDPOINT = { price = "ticker", fees = "fees", feesSeries = "fees", klines = "klines", lend = "lend", lend143 = "lend",
   watch = "lend", watch143 = "lend", sum146 = "summary", sum1 = "summary", sum56 = "summary", sum143 = "summary",
   rewards = "rewards", points = "points", rank = "leaderboard", pos146 = "positions", pos1 = "positions",
-  pos56 = "positions", puts = "ftput" }
+  pos56 = "positions", puts = "ftput", hist = "rewards-history", ptsRows = "points-breakdown" }
 local function fetchError(key)
   local ep = ENDPOINT[key]
   if not ep or key == "sum143" or key == "lend143" or key == "watch143" then return end -- Monad is not served everywhere yet
@@ -783,113 +840,459 @@ local function deltaColor(v)
 end
 
 -- chart shapes -------------------------------------------------------------------------------------
-local CHART_W, CHART_H = 312, 64
+-- ---------------------------------------------------------------- render
+-- The Omarchy panel look: a dark rounded panel, a header, three pill tabs, rounded cards, a footer. Card, pill, bar
+-- and button shapes all go into one Shape meter (MeterCanvas, drawn under the text); text and chart meters are placed
+-- on top. Every tab lays itself out from the top down, so the panel is exactly as tall as the tab needs.
+local PANEL_W, PAD, CW, CPAD, GAP = 380, 14, 352, 12, 10
+local X0, XR = PAD + CPAD, PAD + CW - CPAD                 -- inner left and right edges of a full-width card
+local CARD_FILL, CARD_STROKE = "24,24,27,166", "76,76,82,128"
+local PILL_ON_FILL, BAR_BG, ROW_FILL, BADGE_FILL = "117,89,255,56", "255,255,255,18", "255,255,255,7", "117,89,255,46"
+local GRID, LAST_BAR, BAR = "255,255,255,15", "183,177,255,255", "117,89,255,230"
+local C_TULIP400 = "147,133,255,255"
+local POS_ROWS, PTS_ROWS, PUTS_ROWS = 6, 5, 4
+local HIST_RANGES = { "7d", "30d", "90d", "all" }
+local TAB_ORDER = { "market", "account", "positions" }
+local function validTab(t) return t == "market" or t == "account" or t == "positions" end
 
-local function renderBars(meter, values)
-  set(meter, "Shape", string.format("Rectangle 0,0,%d,%d,6 | Fill Color 20,18,32,255 | StrokeWidth 0", CHART_W, CHART_H))
+-- the meters a tab may show; whatever a render does not place is hidden
+local CONTENT = { "MeterFeesLbl", "MeterFeesVal", "MeterFeesDod", "MeterPriceLbl", "MeterPriceVal", "MeterPriceChg", "MeterDodLbl",
+  "MeterDodVal", "MeterFeesChartLabel", "MeterFeesMax", "MeterFeesChart", "MeterFeesStart", "MeterFeesEnd", "MeterFeesLegend",
+  "MeterPriceChartLabel", "MeterPriceChart", "MeterPriceHi", "MeterPriceLo", "MeterPriceStart", "MeterPriceEnd",
+  "MeterAccountHint", "MeterHfLbl", "MeterHfNote", "MeterHistLbl", "MeterHistNote", "MeterHistTotal", "MeterHistClaimed",
+  "MeterHistChart", "MeterHistHi", "MeterHistLo", "MeterHistStart", "MeterHistEnd", "MeterHistEmpty", "MeterDailyLbl",
+  "MeterDailyMax", "MeterDailyChart", "MeterDailyStart", "MeterDailyEnd", "MeterPosHead", "MeterPosCount", "MeterPosEmpty",
+  "MeterPtsHead", "MeterPutsHead" }
+for i = 1, 4 do CONTENT[#CONTENT + 1] = "MeterHfName" .. i; CONTENT[#CONTENT + 1] = "MeterHfC" .. i end
+for _, k in ipairs({ "Pnl", "Earn", "Points", "Put" }) do
+  for _, s in ipairs({ "Lbl", "Val", "D1", "D2", "D3" }) do CONTENT[#CONTENT + 1] = "Meter" .. k .. s end
+end
+for _, r in ipairs(HIST_RANGES) do CONTENT[#CONTENT + 1] = "MeterRange" .. r end
+for i = 1, POS_ROWS do
+  for _, s in ipairs({ "MeterPosBadge", "MeterPos", "MeterPosSide", "MeterPosNet", "MeterPosMark", "MeterPosEntry", "MeterPosPnl", "MeterPosPct" }) do
+    CONTENT[#CONTENT + 1] = s .. i
+  end
+end
+for i = 1, PTS_ROWS do for _, s in ipairs({ "MeterPtsName", "MeterPtsUsd", "MeterPtsMult" }) do CONTENT[#CONTENT + 1] = s .. i end end
+for i = 1, PUTS_ROWS do for _, s in ipairs({ "MeterPutsName", "MeterPutsCost", "MeterPutsSince" }) do CONTENT[#CONTENT + 1] = s .. i end end
+
+-- one render's canvas shapes and placed meters
+local shapes, placed, lastShapes = {}, {}, 0
+local chartShapes = {}
+local function shape(s) shapes[#shapes + 1] = s end
+local function rrect(x, y, w, h, r, fill, stroke)
+  shape(string.format("Rectangle %d,%d,%d,%d,%d | Fill Color %s | StrokeWidth %d | Stroke Color %s", x, y, w, h, r, fill,
+    stroke and 1 or 0, stroke or "0,0,0,0"))
+end
+local function card(y, h, x, w) rrect(x or PAD, y, w or CW, h, 12, CARD_FILL, CARD_STROKE) end
+-- place a meter: X, Y and optionally W; it is shown
+local function put(meter, x, y, w)
+  set(meter, "X", tostring(math.floor(x + 0.5))); set(meter, "Y", tostring(math.floor(y + 0.5)))
+  if w then set(meter, "W", tostring(math.floor(w + 0.5))) end
+  placed[meter] = true
+end
+local function putText(meter, x, y, text, color, w)
+  put(meter, x, y, w); setText(meter, text, color)
+end
+-- a pill with its text meter centred in it; selected = filled with the accent
+local function pill(meter, x, y, w, h, on, text)
+  rrect(x, y, w, h, math.floor(h / 2), on and PILL_ON_FILL or "0,0,0,1", on and C_TULIP or CARD_STROKE)
+  put(meter, x + w / 2, y + h / 2, w); set(meter, "H", tostring(h))
+  set(meter, "FontColor", on and C_TULIP300 or C_SUB); set(meter, "StringStyle", on and "Bold" or "Normal")
+  if text then setText(meter, text) end
+end
+
+-- charts: a Shape meter at (x, y), its shapes in local coordinates
+local function chartShapesSet(meter, list)
+  set(meter, "Shape", list[1] or "Rectangle 0,0,1,1 | Fill Color 0,0,0,0 | StrokeWidth 0")
+  for i = 2, #list do set(meter, "Shape" .. i, list[i]) end
+  for i = #list + 1, chartShapes[meter] or 0 do set(meter, "Shape" .. i, "") end
+  chartShapes[meter] = #list
+end
+local function renderBars(meter, x, y, w, h, values)
+  put(meter, x, y)
+  local list = {}
+  list[1] = string.format("Rectangle 0,0,%d,1 | Fill Color %s | StrokeWidth 0", w, GRID)
+  list[2] = string.format("Rectangle 0,%d,%d,1 | Fill Color %s | StrokeWidth 0", math.floor(h / 2), w, GRID)
   local n, max = #values, 0
   for _, v in ipairs(values) do if v > max then max = v end end
   if max <= 0 then max = 1 end
-  local pad, step = 6, (CHART_W - 12) / n
-  local bw = math.max(2, math.floor(step) - 2)
+  local gap = 3
+  local bw = math.max(2, (w - gap * (n - 1)) / n)
   for i, v in ipairs(values) do
-    local h = math.max(2, math.floor(v / max * (CHART_H - 12) + 0.5))
-    local x = pad + (i - 1) * step
-    local color = (i == n) and "183,177,255,255" or "117,89,255,255"   -- last bar = today so far
-    set(meter, "Shape" .. (i + 1), string.format("Rectangle %.1f,%d,%d,%d | Fill Color %s | StrokeWidth 0", x, CHART_H - 6 - h, bw, h, color))
+    local bh = math.max(2, math.floor(v / max * (h - 4) + 0.5))
+    list[#list + 1] = string.format("Rectangle %.1f,%d,%.1f,%d,%d | Fill Color %s | StrokeWidth 0", (i - 1) * (bw + gap), h - bh,
+      bw, bh + 2, math.min(3, math.floor(bw / 2)), i == n and LAST_BAR or BAR)
   end
-  for i = n + 2, 40 do set(meter, "Shape" .. i, "") end
+  chartShapesSet(meter, list)
 end
-
-local function renderLine(meter, values)
-  local n, min, max = #values, math.huge, -math.huge
-  for _, v in ipairs(values) do if v < min then min = v end; if v > max then max = v end end
-  if max - min < 1e-12 then max = max + 1; min = min - 1 end
-  local span = max - min
-  min, max = min - span * 0.08, max + span * 0.08
-  local pad = 6
-  local function X(i) return pad + (i - 1) * (CHART_W - 2 * pad) / math.max(1, n - 1) end
-  local function Y(v) return pad + (1 - (v - min) / (max - min)) * (CHART_H - 2 * pad) end
+local function renderLine(meter, x, y, w, h, values, color)
+  put(meter, x, y)
+  local n, lo, hi = #values, math.huge, -math.huge
+  for _, v in ipairs(values) do if v < lo then lo = v end; if v > hi then hi = v end end
+  local span = hi - lo
+  if span <= 0 then span = math.abs(hi) > 0 and math.abs(hi) or 1 end
+  local pad = 4
+  local function X(i) return pad + (i - 1) * (w - 2 * pad) / math.max(1, n - 1) end
+  local function Y(v) return h - pad - (v - lo) / span * (h - 2 * pad) end
   local line, area = {}, {}
   for i, v in ipairs(values) do
     local seg = string.format("%.1f,%.1f", X(i), Y(v))
     line[#line + 1] = (i == 1) and seg or ("LineTo " .. seg)
-    area[#area + 1] = (i == 1) and string.format("%.1f,%d | LineTo %s", X(1), CHART_H - pad, seg) or ("LineTo " .. seg)
+    area[#area + 1] = (i == 1) and string.format("%.1f,%d | LineTo %s", X(1), h, seg) or ("LineTo " .. seg)
   end
-  area[#area + 1] = string.format("LineTo %.1f,%d | ClosePath 1", X(n), CHART_H - pad)
-  set(meter, "Shape", string.format("Rectangle 0,0,%d,%d,6 | Fill Color 20,18,32,255 | StrokeWidth 0", CHART_W, CHART_H))
+  area[#area + 1] = string.format("LineTo %.1f,%d | ClosePath 1", X(n), h)
   set(meter, "AreaPath", table.concat(area, " | "))
-  set(meter, "Shape2", "Path AreaPath | Fill Color 117,89,255,60 | StrokeWidth 0")
   set(meter, "LinePath", table.concat(line, " | "))
-  set(meter, "Shape3", "Path LinePath | Fill Color 0,0,0,0 | StrokeWidth 2 | Stroke Color 183,177,255,255")
-  local up = values[n] >= values[1]
-  set(meter, "Shape4", string.format("Ellipse %.1f,%.1f,3,3 | Fill Color %s | StrokeWidth 0", X(n), Y(values[n]), up and C_GREEN or C_RED))
+  set(meter, "AreaFill", "90 | " .. color:gsub(",%d+$", ",80") .. " ; 0.0 | " .. color:gsub(",%d+$", ",0") .. " ; 1.0")
+  chartShapesSet(meter, {
+    string.format("Rectangle 0,0,%d,%d | Fill Color 0,0,0,0 | StrokeWidth 0", w, h),
+    "Path AreaPath | Fill LinearGradient AreaFill | StrokeWidth 0",
+    "Path LinePath | Fill Color 0,0,0,0 | StrokeWidth 1.8 | Stroke Color " .. color .. " | StrokeLineJoin Round",
+    string.format("Ellipse %.1f,%.1f,3 | Fill Color %s | StrokeWidth 0", X(n), Y(values[n]), C_TULIP300),
+  })
+  return lo, hi
 end
 
--- ---------------------------------------------------------------- render
-local POS_ROWS = 10
-local PANEL_H = 424
--- Three tabs so nothing needs scrolling: the header (wallet shown, switch, status, cog), the banner and the footer
--- stay visible on every tab.
-local TAB_ORDER = { "market", "account", "positions" }
-local TAB_LABEL = { market = "MeterTabMarket", account = "MeterTabAccount", positions = "MeterTabPositions" }
-local TAB_METERS = {
-  market = { "MeterPriceLbl", "MeterPriceVal", "MeterFeesLbl", "MeterFeesVal", "MeterFeesChartLabel", "MeterFeesChart",
-    "MeterPriceChartLabel", "MeterPriceChart" },
-  account = { "MeterAccountHint", "MeterHfLbl", "MeterHfVal", "MeterHfC1", "MeterHfC2", "MeterHfC3", "MeterHfC4",
-    "MeterPnlLbl", "MeterPnlVal", "MeterEarnLbl", "MeterEarnVal", "MeterEarnD1", "MeterEarnD2", "MeterEarnD3",
-    "MeterPointsLbl", "MeterPointsVal", "MeterPointsD1", "MeterPointsD2", "MeterPutLbl", "MeterPutVal" },
-  positions = { "MeterPosHead", "MeterPos1", "MeterPos2", "MeterPos3", "MeterPos4", "MeterPos5", "MeterPos6", "MeterPos7",
-    "MeterPos8", "MeterPos9", "MeterPos10" },
-}
-local function validTab(t) return t == "market" or t == "account" or t == "positions" end
+local function fmtFtShort(v) return fmtFt(v) end
+local function plainUsd(v) return fmtUsd(v) end
 
--- Account tab rows stacked on one grid: every row 20 px (label and value on the same line), every detail line 16 px,
--- a 6 px gap between groups. Empty detail lines take no room, so no group leaves a hole above the next one.
-local ACCOUNT_TOP, ROW_H, DETAIL_H, GROUP_GAP = 102, 20, 16, 6
-local ACCOUNT_GROUPS = {
-  { "MeterHfLbl", "MeterHfVal", { "MeterHfC1", "MeterHfC2", "MeterHfC3", "MeterHfC4" } },
-  { "MeterPnlLbl", "MeterPnlVal", {} },
-  { "MeterEarnLbl", "MeterEarnVal", { "MeterEarnD1", "MeterEarnD2", "MeterEarnD3" } },
-  { "MeterPointsLbl", "MeterPointsVal", { "MeterPointsD1", "MeterPointsD2" } },
-  { "MeterPutLbl", "MeterPutVal", {} },
-}
-local function layoutAccount(hasText)
-  local y = ACCOUNT_TOP
-  for _, g in ipairs(ACCOUNT_GROUPS) do
-    set(g[1], "Y", tostring(y)); set(g[2], "Y", tostring(y - 1))
-    y = y + ROW_H
-    for _, d in ipairs(g[3]) do
-      set(d, "Y", tostring(y - 1))
-      if hasText(d) then y = y + DETAIL_H end
+-- ---------------------------------------------------------------- tabs
+local function renderMarket(y, t)
+  -- hero: fees, FT price, day over day
+  card(y, 66)
+  local colW = (CW - 2 * CPAD) / 3
+  local dod = feesDayOverDay(S.feesSeries, t)
+  putText("MeterFeesLbl", X0, y + 12, "FEES LAST 24H", C_FAINT, colW)
+  putText("MeterFeesVal", X0, y + 25, S.fees and fmtUsd(S.fees.period24h) or "-", stale("fees") and C_SUB or C_TEXT, colW)
+  local mkt = marketUrl("FT-ftUSD", cfg.priceChain)
+  for _, m in ipairs({ "MeterPriceLbl", "MeterPriceVal", "MeterPriceChg" }) do link(m, mkt, "market-ft-price") end
+  putText("MeterPriceLbl", X0 + colW, y + 12, "FT PRICE", C_FAINT, colW)
+  putText("MeterPriceVal", X0 + colW, y + 25, S.price and fmtPrice(S.price.price) or "-", stale("price") and C_SUB or C_TEXT, colW)
+  local ch = S.price and S.price.changePct24h
+  putText("MeterPriceChg", X0 + colW, y + 46, ch and (fmtPct(ch) .. " 24h") or "", deltaColor(ch), colW)
+  putText("MeterDodLbl", X0 + 2 * colW, y + 12, "DAY / DAY", C_FAINT, colW)
+  putText("MeterDodVal", X0 + 2 * colW, y + 25, dod and fmtPct(dod) or "-", dod and deltaColor(dod) or C_SUB, colW)
+  y = y + 66 + GAP
+
+  -- daily fees, with the per-product split
+  local series = S.feesSeries
+  local legend = {}
+  for _, p in ipairs(S.fees and S.fees.products or {}) do
+    if p.usd > 0 then legend[#legend + 1] = p.name:gsub("_", " ") .. " " .. fmtUsd(p.usd) end
+  end
+  local h = 134 + (#legend > 0 and 16 or 0)
+  card(y, h)
+  putText("MeterFeesChartLabel", X0, y + 12, "DAILY FEES " .. DOT .. " LAST " .. (series and #series or 31) .. " DAYS", C_FAINT)
+  if series and #series > 1 then
+    local v, max = {}, 0
+    for i, r in ipairs(series) do v[i] = r.total; if r.total > max then max = r.total end end
+    putText("MeterFeesMax", XR, y + 12, "max " .. fmtUsd(max), C_FAINT)
+    renderBars("MeterFeesChart", X0, y + 30, CW - 2 * CPAD, 80, v)
+    putText("MeterFeesStart", X0, y + 114, tostring(series[1].date):sub(6, 10), C_FAINT)
+    putText("MeterFeesEnd", XR, y + 114, tostring(series[#series].date):sub(6, 10), C_FAINT)
+  else
+    putText("MeterFeesMax", XR, y + 12, "loading...", C_FAINT)
+  end
+  if #legend > 0 then putText("MeterFeesLegend", X0, y + 132, table.concat(legend, "   "), C_SUB, CW - 2 * CPAD) end
+  y = y + h + GAP
+
+  -- FT market price
+  card(y, 134)
+  putText("MeterPriceChartLabel", X0, y + 12, "FT MARKET PRICE " .. DOT .. " " .. (S.klines and #S.klines or 30) .. " DAYS", C_FAINT)
+  for _, m in ipairs({ "MeterPriceChartLabel", "MeterPriceChart", "MeterPriceHi", "MeterPriceLo", "MeterPriceStart", "MeterPriceEnd" }) do
+    link(m, mkt, "market-price-chart")
+  end
+  if S.klines and #S.klines > 1 then
+    local v = {}
+    for i, r in ipairs(S.klines) do v[i] = r.close end
+    local gutter = 44
+    local lo, hi = renderLine("MeterPriceChart", X0 + gutter, y + 30, CW - 2 * CPAD - gutter, 80, v, C_TULIP400)
+    putText("MeterPriceHi", X0, y + 30, fmtPrice(hi), C_FAINT, gutter)
+    putText("MeterPriceLo", X0, y + 98, fmtPrice(lo), C_FAINT, gutter)
+    putText("MeterPriceStart", X0 + gutter, y + 114, S.klines[1].date or "", C_FAINT)
+    putText("MeterPriceEnd", XR, y + 114, S.klines[#S.klines].date or "", C_FAINT)
+  end
+  return y + 134
+end
+
+-- the label / value / detail lines of a metric card
+local function metric(key, x, y, w, label, value, valueColor, details, tipText)
+  putText("Meter" .. key .. "Lbl", x + CPAD, y + 12, label, C_FAINT, w - 2 * CPAD)
+  putText("Meter" .. key .. "Val", x + CPAD, y + 25, value, valueColor or C_TEXT, w - 2 * CPAD)
+  for i = 1, 3 do
+    local d = details[i]
+    if d and d[1] ~= "" then putText("Meter" .. key .. "D" .. i, x + CPAD, y + 52 + (i - 1) * 15, d[1], d[2] or C_SUB, w - 2 * CPAD)
+    else setText("Meter" .. key .. "D" .. i, "") end
+  end
+  if tipText then tip("Meter" .. key .. "Val", tipText); tip("Meter" .. key .. "Lbl", tipText) end
+end
+local function metricHeight(details)
+  local n = 0
+  for _, d in ipairs(details) do if d[1] ~= "" then n = n + 1 end end
+  return 52 + n * 15 + 6
+end
+
+local function renderAccount(y, t, level)
+  if cfg.wallet == "" then
+    card(y, 84)
+    putText("MeterAccountHint", X0, y + 14, #cfg.badWallets > 0
+      and ("Not a valid address: " .. tostring(cfg.badWallets[1]):sub(1, 24) .. " (0x + 40 hex characters)")
+      or "Add a wallet to see health factor, PnL, FT earned, points, ftPUT and positions: click the cog at the top right.",
+      #cfg.badWallets > 0 and C_RED or C_SUB, CW - 2 * CPAD)
+    for _, m in ipairs({ "MeterEarnLbl", "MeterEarnVal", "MeterPointsLbl", "MeterPointsVal" }) do tip(m, "") end
+    return y + 84
+  end
+
+  -- health factor per chain: a bar from 1 to 3, the red liquidation line, the value
+  local l = lendList()
+  local rows = {}
+  for _, c in ipairs(l or {}) do if #rows < 4 then rows[#rows + 1] = c end end
+  local h = 34 + math.max(1, #rows) * 26 + 4
+  card(y, h)
+  putText("MeterHfLbl", X0, y + 12, "HEALTH FACTOR", C_FAINT)
+  local liq = (rows[1] and rows[1].liqHf) or DEFAULT_LIQ_HF
+  putText("MeterHfNote", XR, y + 12, string.format("red line = liquidation < %.2f", liq), C_FAINT)
+  if #rows == 0 then putText("MeterHfName1", X0, y + 36, l and "no chains" or "loading...", C_FAINT, CW - 2 * CPAD) end
+  local bx0, bx1 = X0 + 70, XR - 62
+  for i, c in ipairs(rows) do
+    local ry = y + 34 + (i - 1) * 26
+    local lvl = c.hf and levelFor(c.hf, { warn = cfg.warn, critical = cfg.critical }, 0) or 0
+    local color = not c.hf and C_SUB or (lvl == 2 and C_RED or (lvl == 1 and C_AMBER or C_GREEN))
+    putText("MeterHfName" .. i, X0, ry + 1, c.name, C_TEXT, 66)
+    link("MeterHfName" .. i, SITE .. "lend/dashboard/", "account-hf-" .. tostring(c.name):lower():gsub("[^%w]+", "-"))
+    link("MeterHfC" .. i, SITE .. "lend/dashboard/", "account-hf-" .. tostring(c.name):lower():gsub("[^%w]+", "-"))
+    local w = bx1 - bx0
+    rrect(bx0, ry + 7, w, 6, 3, BAR_BG)
+    if c.hf then
+      local fw = math.max(0, math.min(1, (math.min(3, c.hf) - 1) / 2)) * w
+      if fw >= 1 then rrect(bx0, ry + 7, fw, 6, 3, color) end
     end
-    y = y + GROUP_GAP
+    local mx = bx0 + math.max(0, math.min(1, ((c.liqHf or DEFAULT_LIQ_HF) - 1) / 2)) * w - 1
+    rrect(mx, ry + 3, 2, 14, 1, C_RED)
+    putText("MeterHfC" .. i, XR, ry + (c.hf and 0 or 2), c.hf and fmtHf(c.hf) or "no debt", color, 60)
+    set("MeterHfC" .. i, "FontSize", c.hf and "9" or "7.5")
+    set("MeterHfC" .. i, "StringStyle", c.hf and "Bold" or "Normal")
   end
+  y = y + h + GAP
+
+  -- PnL | FT earned
+  local half = (CW - GAP) / 2
+  local pnl = pnlTotal()
+  local pnlLine = {}
+  for _, k in ipairs({ "sum146", "sum1", "sum56", "sum143" }) do
+    local s = S[k]
+    if s and math.abs(s.pnlUsd) >= 0.005 then pnlLine[#pnlLine + 1] = (HF_CHAINS[s.chainId] or tostring(s.chainId)) .. " " .. fmtSignedUsd(s.pnlUsd) end
+  end
+  local pnlD = { { table.concat(pnlLine, "  ") } }
+  local rw = S.rewards
+  local earnD = { { "" }, { "" }, { "" } }
+  if rw and rw.totalFt then
+    local by = {}
+    for _, c in ipairs(rw.chains or {}) do if c.sft + c.lend >= 0.005 then by[#by + 1] = c.name .. " " .. fmtFt(c.sft + c.lend) end end
+    earnD = {
+      { "sftUSD yield " .. fmtFt(rw.sftFt) .. "  " .. DOT .. "  Lend " .. fmtFt(rw.lendFt) },
+      { table.concat(by, ", ") },
+      { (S.price and (APPROX .. " " .. fmtUsd(rw.totalFt * S.price.price) .. " at market") or "") ..
+        ((rw.claimableFt or 0) > 0 and ("  " .. DOT .. "  claim " .. fmtFt(rw.claimableFt)) or "") },
+    }
+  end
+  local rh = math.max(metricHeight(pnlD), metricHeight(earnD))
+  card(y, rh, PAD, half); card(y, rh, PAD + half + GAP, half)
+  metric("Pnl", PAD, y, half, "PNL (UNREALIZED)", pnl and fmtSignedUsd(pnl) or "unavailable", pnl and deltaColor(pnl) or C_FAINT, pnlD)
+  metric("Earn", PAD + half + GAP, y, half, "FT EARNED " .. DOT .. " ALL TIME", rw and (fmtFt(rw.totalFt) .. " FT") or "unavailable",
+    rw and C_TULIP300 or C_FAINT, earnD, earnedTip(rw))
+  y = y + rh + GAP
+
+  -- Points | ftPUT gain (Points takes the whole row when there is no ftPUT)
+  local g = S.puts and putGain(S.puts, S.price and S.price.price)
+  local pair = S.puts ~= nil
+  local by = {}
+  for _, c in ipairs(S.points and S.points.chains or {}) do by[#by + 1] = c.name .. " " .. fmtPoints(c.points) end
+  local r = S.rank
+  local ptsD = pair and { { table.concat(by, "  " .. DOT .. "  ") }, { r and ("rank " .. HASH .. thousands(r.rank) .. " of " .. thousands(r.total)) or "" } }
+    or { { table.concat(by, "  " .. DOT .. "  ") .. (r and ("  " .. DOT .. "  rank " .. HASH .. thousands(r.rank) .. " of " .. thousands(r.total)) or "") } }
+  local putD = { { g and (fmtPct(g.gainPct) .. "  " .. DOT .. "  value " .. fmtUsd(S.puts.ftHeld * (S.price and S.price.price or 0))) or "", g and deltaColor(g.gainUsd) } }
+  local w2 = pair and half or CW
+  local ph = pair and math.max(metricHeight(ptsD), metricHeight(putD)) or metricHeight(ptsD)
+  card(y, ph, PAD, w2)
+  metric("Points", PAD, y, w2, "POINTS " .. DOT .. " ALL CHAINS", S.points and fmtPoints(S.points.total) or "unavailable",
+    S.points and C_TEXT or C_FAINT, ptsD, pointsTip(S.points, S.rank))
+  if pair then
+    card(y, ph, PAD + half + GAP, half)
+    metric("Put", PAD + half + GAP, y, half, "FTPUT GAIN", g and fmtSignedUsd(g.gainUsd) or (S.puts.count .. " position" .. (S.puts.count == 1 and "" or "s")),
+      g and deltaColor(g.gainUsd) or C_TEXT, putD)
+  end
+  y = y + ph + GAP
+
+  -- FT earned over time: Total earned / Claimed, and the range
+  local hh = 170
+  card(y, hh)
+  putText("MeterHistLbl", X0, y + 12, "FT EARNED OVER TIME", C_FAINT)
+  putText("MeterHistNote", XR, y + 12, "all chains", C_FAINT)
+  pill("MeterHistTotal", X0, y + 30, 88, 22, S.histSeries ~= "claimed")
+  pill("MeterHistClaimed", X0 + 94, y + 30, 70, 22, S.histSeries == "claimed")
+  local hs = S.hist
+  local gutter = 44
+  if hs and #hs > 1 then
+    local v = {}
+    for i, p in ipairs(hs) do v[i] = (S.histSeries == "claimed") and p.claimed or p.earned end
+    local lo, hi = renderLine("MeterHistChart", X0 + gutter, y + 60, CW - 2 * CPAD - gutter, 56, v,
+      S.histSeries == "claimed" and "36,156,145,255" or C_TULIP)
+    putText("MeterHistHi", X0, y + 60, fmtFt(hi), C_FAINT, gutter)
+    putText("MeterHistLo", X0, y + 104, fmtFt(lo), C_FAINT, gutter)
+    putText("MeterHistStart", X0 + gutter, y + 118, hs[1].date, C_FAINT)
+    putText("MeterHistEnd", XR, y + 118, hs[#hs].date, C_FAINT)
+  else
+    putText("MeterHistEmpty", X0, y + 80, hs and "Not enough history yet." or "loading...", C_FAINT, CW - 2 * CPAD)
+  end
+  local rx = X0
+  for _, rg in ipairs(HIST_RANGES) do
+    local w = (rg == "7d" or rg == "all") and 36 or 40
+    pill("MeterRange" .. rg, rx, y + 138, w, 22, S.histRange == rg)
+    rx = rx + w + 6
+  end
+  y = y + hh
+
+  -- daily FT earned (hidden while there is none)
+  local daily = hs and dailyGains(hs, "earned") or {}
+  if #daily > 30 then local cut = {}; for i = #daily - 29, #daily do cut[#cut + 1] = daily[i] end; daily = cut end
+  if #daily > 0 then
+    y = y + GAP
+    card(y, 96)
+    putText("MeterDailyLbl", X0, y + 12, "DAILY FT EARNED " .. DOT .. " LAST " .. #daily .. " DAYS", C_FAINT)
+    local v, max = {}, 0
+    for i, d in ipairs(daily) do v[i] = d.gain; if d.gain > max then max = d.gain end end
+    putText("MeterDailyMax", XR, y + 12, "max " .. fmtFt(max) .. " FT", C_FAINT)
+    renderBars("MeterDailyChart", X0, y + 30, CW - 2 * CPAD, 44, v)
+    putText("MeterDailyStart", X0, y + 78, daily[1].date, C_FAINT)
+    putText("MeterDailyEnd", XR, y + 78, daily[#daily].date, C_FAINT)
+    y = y + 96
+  end
+  return y
 end
 
-local function renderTabs()
-  for _, name in ipairs(TAB_ORDER) do
-    local on = S.tab == name
-    for _, m in ipairs(TAB_METERS[name]) do set(m, "Hidden", on and "0" or "1") end
-    set(TAB_LABEL[name], "FontColor", on and C_TULIP300 or C_FAINT)
+local function renderPositions(y)
+  if cfg.wallet == "" then
+    card(y, 60)
+    putText("MeterPosEmpty", X0, y + 20, "Add a wallet to see its open positions.", C_SUB, CW - 2 * CPAD)
+    return y + 60
   end
+  local pos = allPositions()
+  local n = pos and math.min(#pos, POS_ROWS) or 0
+  local h = 32 + (n > 0 and n * 48 or 24) + 4
+  card(y, h)
+  putText("MeterPosHead", X0, y + 12, "POSITIONS", C_FAINT)
+  putText("MeterPosCount", XR, y + 12, pos and #pos > 0 and (#pos .. " open") or "", C_FAINT)
+  if not pos then putText("MeterPosEmpty", X0, y + 34, "loading...", C_FAINT, CW - 2 * CPAD)
+  elseif #pos == 0 then putText("MeterPosEmpty", X0, y + 34, "No open positions.", C_FAINT, CW - 2 * CPAD) end
+  for i = 1, n do
+    local p = pos[i]
+    local ry = y + 32 + (i - 1) * 48
+    local url = marketUrl(p.market, p.chainId)
+    rrect(X0, ry, CW - 2 * CPAD, 44, 9, ROW_FILL)
+    shape(string.format("Ellipse %d,%d,14 | Fill Color %s | StrokeWidth 1 | Stroke Color 117,89,255,102", X0 + 22, ry + 22, BADGE_FILL))
+    putText("MeterPosBadge" .. i, X0 + 22, ry + 22, tostring(p.symbol):sub(1, 1):upper(), C_TULIP300, 28)
+    putText("MeterPos" .. i, X0 + 44, ry + 6, p.symbol, C_TEXT, 70)
+    local lev = (p.leverage and p.leverage > 0) and string.format(p.leverage >= 10 and " %.0fx" or " %.1fx", p.leverage) or ""
+    local long = p.side == "long"
+    rrect(X0 + 100, ry + 7, 58, 14, 7, long and "15,215,39,36" or "239,68,68,36")
+    putText("MeterPosSide" .. i, X0 + 129, ry + 14, p.side .. lev, long and C_GREEN or C_RED, 58)
+    putText("MeterPosNet" .. i, X0 + 44, ry + 25, p.network .. "  " .. fmtSize(p.size), C_FAINT, 120)
+    putText("MeterPosMark" .. i, X0 + 168, ry + 6, "mark " .. fmtPrice(p.mark), C_SUB, 90)
+    putText("MeterPosEntry" .. i, X0 + 168, ry + 25, p.entry and ("entry " .. fmtPrice(p.entry)) or "", C_FAINT, 90)
+    putText("MeterPosPnl" .. i, XR - 8, ry + 6, fmtSignedUsd(p.pnlUsd), deltaColor(p.pnlUsd), 80)
+    putText("MeterPosPct" .. i, XR - 8, ry + 25, p.pnlPct and fmtPct(p.pnlPct) or "", deltaColor(p.pnlUsd), 80)
+    for _, m in ipairs({ "MeterPosBadge", "MeterPos", "MeterPosSide", "MeterPosNet", "MeterPosMark", "MeterPosEntry", "MeterPosPnl", "MeterPosPct" }) do
+      link(m .. i, url, "positions-row")
+    end
+  end
+  y = y + h
+
+  local pr = S.ptsRows or {}
+  if #pr > 0 then
+    y = y + GAP
+    local k = math.min(#pr, PTS_ROWS)
+    local ph = 32 + k * 18 + 6
+    card(y, ph)
+    putText("MeterPtsHead", X0, y + 12, "POINTS POSITIONS", C_FAINT)
+    for i = 1, k do
+      local r = pr[i]
+      local ry = y + 32 + (i - 1) * 18
+      putText("MeterPtsName" .. i, X0, ry, r.label, C_TEXT, 170)
+      putText("MeterPtsUsd" .. i, XR - 60, ry, r.positionUsd and fmtUsd(r.positionUsd) or "-", C_SUB, 90)
+      putText("MeterPtsMult" .. i, XR, ry, r.multiplier and string.format("x%.2f", r.multiplier) or "x?", C_TULIP300, 50)
+    end
+    y = y + ph
+  end
+
+  local rows = S.puts and S.puts.rows or {}
+  if #rows > 0 then
+    y = y + GAP
+    local k = math.min(#rows, PUTS_ROWS)
+    local ph = 32 + k * 18 + 6
+    card(y, ph)
+    putText("MeterPutsHead", X0, y + 12, "FTPUT POSITIONS " .. DOT .. " COST = CAPITAL X PRICE AT INVESTMENT", C_FAINT, CW - 2 * CPAD)
+    for i = 1, k do
+      local r = rows[i]
+      local ry = y + 32 + (i - 1) * 18
+      putText("MeterPutsName" .. i, X0, ry, HASH .. r.nft .. " " .. r.symbol, C_TEXT, 130)
+      putText("MeterPutsCost" .. i, XR - 70, ry, fmtUsd(r.costUsd) .. " @ " .. fmtPrice(r.strike), C_SUB, 130)
+      putText("MeterPutsSince" .. i, XR, ry, tostring(r.since or ""):sub(3), C_SUB, 60)
+    end
+    y = y + ph
+  end
+  return y
 end
 
 function M.render()
   if not S then return end
   local t = now()
+  shapes, placed = {}, {}
   local lowest = lendList() and lowestHf(lendList())
   local level = lowest and levelFor(lowest.hf, { warn = cfg.warn, critical = cfg.critical }, 0) or 0
   local liq = lowest and lowest.liqHf or DEFAULT_LIQ_HF
   local n = #cfg.wallets
 
-  -- header: the wallet shown, "i/n" and the switch icon when there are several
+  -- header: logo box, title, the wallet shown, the switch / settings / refresh buttons
+  rrect(14, 14, 30, 30, 9, "12,9,26,255", "117,89,255,102")
   local sub = "Market, fees and your account"
-  if cfg.wallet ~= "" then
-    sub = shortAddr(cfg.wallet) .. (n > 1 and string.format("  %d/%d", walletIndex(cfg.wallet), n) or "")
-  end
+  if cfg.wallet ~= "" then sub = shortAddr(cfg.wallet) .. (n > 1 and string.format("  %d/%d", walletIndex(cfg.wallet), n) or "") end
   setText("MeterSub", sub, cfg.wallet ~= "" and C_SUB or C_FAINT)
+  local bx = PANEL_W - PAD - 30
+  for _, b in ipairs({ "MeterBtnRefresh", "MeterCog", "MeterSwitch" }) do
+    if b ~= "MeterSwitch" or n > 1 then
+      rrect(bx, 14, 30, 30, 8, "0,0,0,1", CARD_STROKE)
+      set(b, "X", tostring(bx + 15)); set(b, "Y", "29")
+      bx = bx - 38
+    end
+  end
   set("MeterSwitch", "Hidden", n > 1 and "0" or "1")
+  rrect(PAD, 54, CW, 1, 0, CARD_STROKE)
+
+  -- tabs, and a low health factor right of them
+  local tx = PAD
+  for _, name in ipairs(TAB_ORDER) do
+    local m = name == "market" and "MeterTabMarket" or (name == "account" and "MeterTabAccount" or "MeterTabPositions")
+    local w = name == "market" and 64 or (name == "account" and 70 or 80)
+    pill(m, tx, 64, w, 24, S.tab == name)
+    tx = tx + w + 6
+  end
+  local who = n > 1 and (shortAddr(cfg.wallet) .. " ") or ""
+  if level == 2 then setText("MeterBanner", string.format("%sHF %.2f: near liquidation (below %.2f)", who, lowest.hf, liq), C_RED)
+  elseif level == 1 then setText("MeterBanner", string.format("%sHF %.2f: low (liquidation below %.2f)", who, lowest.hf, liq), C_AMBER)
+  else setText("MeterBanner", "", C_AMBER) end
+  set("MeterBanner", "Y", "96"); set("MeterBanner", "X", tostring(PAD + CW))
+
+  -- the tab
+  local y = 100 + ((level > 0) and 14 or 0)
+  if S.tab == "market" then y = renderMarket(y, t)
+  elseif S.tab == "account" then y = renderAccount(y, t, level)
+  else y = renderPositions(y) end
+
+  -- footer: updated time and the site link
+  y = y + GAP
+  rrect(PAD, y, CW, 1, 0, CARD_STROKE)
   local anyData = S.price or S.fees
   local ts = 0
   for _, v in pairs(S.ts) do if v > ts then ts = v end end
@@ -897,136 +1300,26 @@ function M.render()
     local failed = S.err.price or S.err.fees or t - S.startedAt > 20
     setText("MeterStatus", failed and "offline" or "loading...", C_FAINT)
   elseif stale("price") or stale("fees") or (cfg.wallet ~= "" and stale("lend")) then
-    setText("MeterStatus", "stale " .. os.date("%H:%M", ts), C_AMBER)
+    setText("MeterStatus", "stale " .. os.date("%H:%M:%S", ts), C_AMBER)
   else
-    setText("MeterStatus", "updated " .. os.date("%H:%M", ts), C_FAINT)
+    setText("MeterStatus", "updated " .. os.date("%H:%M:%S", ts), C_FAINT)
   end
+  set("MeterStatus", "X", tostring(PAD)); set("MeterStatus", "Y", tostring(y + 10))
+  set("MeterBtnDashboard", "X", tostring(PAD + CW)); set("MeterBtnDashboard", "Y", tostring(y + 8))
+  set("MeterDisclaimer", "X", tostring(PAD)); set("MeterDisclaimer", "Y", tostring(y + 28))
+  local panelH = y + 48
 
-  -- warning state: panel border and banner (for the wallet shown; a low wallet is always the one shown)
-  local who = n > 1 and (shortAddr(cfg.wallet) .. " ") or ""
-  if level == 2 then
-    set("MeterBackground", "Shape", string.format("Rectangle 0,0,340,%d,12 | Fill Color 14,14,17,240 | StrokeWidth 2 | Stroke Color %s", PANEL_H, C_RED))
-    setText("MeterBanner", string.format("%sHF %.2f: near liquidation (below %.2f)", who, lowest.hf, liq), C_RED)
-  elseif level == 1 then
-    set("MeterBackground", "Shape", string.format("Rectangle 0,0,340,%d,12 | Fill Color 14,14,17,240 | StrokeWidth 2 | Stroke Color %s", PANEL_H, C_AMBER))
-    setText("MeterBanner", string.format("%sHF %.2f: health factor is low (liquidation below %.2f)", who, lowest.hf, liq), C_AMBER)
-  else
-    set("MeterBackground", "Shape", string.format("Rectangle 0,0,340,%d,12 | Fill Color 14,14,17,240 | StrokeWidth 1 | Stroke Color %s", PANEL_H, C_BORDER))
-    setText("MeterBanner", "", C_AMBER)
-  end
-  renderTabs()
+  -- panel: border amber or red while a health factor is low
+  local border = level == 2 and C_RED or (level == 1 and C_AMBER or "117,89,255,110")
+  set("MeterBackground", "Shape", string.format("Rectangle 0,0,%d,%d,14 | Fill Color 14,14,17,245 | StrokeWidth %d | Stroke Color %s",
+    PANEL_W, panelH, level > 0 and 2 or 1, border))
 
-  -- market: the FT price meters open the FT-ftUSD spot page on the chain being shown
-  local mkt = marketUrl("FT-ftUSD", cfg.priceChain)
-  link("MeterPriceLbl", mkt, "market-ft-price"); link("MeterPriceVal", mkt, "market-ft-price")
-  link("MeterPriceChartLabel", mkt, "market-price-chart"); link("MeterPriceChart", mkt, "market-price-chart")
-  if S.price then
-    local ch = S.price.changePct24h
-    local c = stale("price") and dim(deltaColor(ch)) or deltaColor(ch)
-    setText("MeterPriceVal", fmtPrice(S.price.price) .. (ch and ("  " .. fmtPct(ch) .. " 24h") or ""), c)
-  else setText("MeterPriceVal", "unavailable", C_FAINT) end
-  if S.fees then
-    local dod = feesDayOverDay(S.feesSeries, t)
-    local c = stale("fees") and dim(deltaColor(dod)) or deltaColor(dod)
-    setText("MeterFeesVal", fmtUsd(S.fees.period24h) .. (dod and ("  " .. fmtPct(dod) .. " d/d") or ""), c)
-  else setText("MeterFeesVal", "unavailable", C_FAINT) end
-
-  if S.feesSeries and #S.feesSeries > 1 then
-    local v = {}
-    for i, r in ipairs(S.feesSeries) do v[i] = r.total end
-    renderBars("MeterFeesChart", v)
-    setText("MeterFeesChartLabel", string.format("Fees, last %d days (today so far in light purple)", #v), C_FAINT)
-  end
-  if S.klines and #S.klines > 1 then
-    local v = {}
-    for i, r in ipairs(S.klines) do v[i] = r.close end
-    renderLine("MeterPriceChart", v)
-    setText("MeterPriceChartLabel", string.format("FT market price, last %d days", #v), C_FAINT)
-  end
-
-  -- account
-  local hasWallet = cfg.wallet ~= ""
-  local details = { "MeterHfC1", "MeterHfC2", "MeterHfC3", "MeterHfC4", "MeterEarnD1", "MeterEarnD2", "MeterEarnD3",
-    "MeterPointsD1", "MeterPointsD2" }
-  if not hasWallet then
-    setText("MeterAccountHint", #cfg.badWallets > 0 and ("Not a valid address: " .. tostring(cfg.badWallets[1]):sub(1, 24) .. " (0x + 40 hex characters)")
-      or "Add a wallet to see health factor, PnL, FT earned, points, ftPUT and positions: click the cog at the top right, or 'Wallets' below.",
-      #cfg.badWallets > 0 and C_RED or C_SUB)
-    for _, m in ipairs({ "MeterHfVal", "MeterPnlVal", "MeterEarnVal", "MeterPointsVal", "MeterPutVal" }) do setText(m, "") end
-    for _, m in ipairs({ "MeterHfLbl", "MeterPnlLbl", "MeterEarnLbl", "MeterPointsLbl", "MeterPutLbl" }) do setText(m, "") end
-    for _, m in ipairs(details) do setText(m, "") end
-    for _, m in ipairs({ "MeterEarnLbl", "MeterEarnVal", "MeterPointsLbl", "MeterPointsVal" }) do tip(m, "") end
-    setText("MeterPosHead", "Add a wallet to see its open positions.", C_SUB)
-    for i = 1, POS_ROWS do setText("MeterPos" .. i, "") end
-  else
-    setText("MeterAccountHint", "")
-    local lbl = { MeterHfLbl = "Health factor", MeterPnlLbl = "PnL (unrealized)", MeterEarnLbl = "FT earned, all time", MeterPointsLbl = "Points, all chains", MeterPutLbl = "ftPUT gain" }
-    for m, v in pairs(lbl) do setText(m, v, C_FAINT) end
-    for _, m in ipairs(details) do setText(m, "") end
-    local l = lendList()
-    if l then
-      if lowest then
-        local c = level == 2 and C_RED or (level == 1 and C_AMBER or C_GREEN)
-        setText("MeterHfVal", fmtHf(lowest.hf) .. "  " .. lowest.name, stale("lend") and dim(c) or c)
-      else setText("MeterHfVal", INF .. "  no debt", C_GREEN) end
-      local row = 0
-      for _, c in ipairs(l) do
-        if row < 4 and (c.hf or (c.debtUsd or 0) > 0 or (c.equityUsd or 0) > 0) then
-          row = row + 1
-          local eqText = c.equityUsd and ("  equity " .. fmtUsd(c.equityUsd)) or ""
-          link("MeterHfC" .. row, SITE .. "lend/dashboard/", "account-hf-" .. tostring(c.name):lower():gsub("[^%w]+", "-"))
-          setText("MeterHfC" .. row, c.hf and string.format("%-9s HF %s  debt %s%s", c.name, fmtHf(c.hf), fmtUsd(c.debtUsd or 0), eqText)
-            or string.format("%-9s no debt%s", c.name, eqText), C_SUB)
-        end
-      end
-    else setText("MeterHfVal", "unavailable", C_FAINT) end
-    local pnl = pnlTotal()
-    if pnl then setText("MeterPnlVal", fmtSignedUsd(pnl), deltaColor(pnl)) else setText("MeterPnlVal", "unavailable", C_FAINT) end
-    local rw = S.rewards
-    if rw then
-      setText("MeterEarnVal", fmtFt(rw.totalFt) .. " FT", C_TEXT)
-      if rw.sftFt then
-        setText("MeterEarnD1", string.format("sftUSD yield %s FT  (claimed %s, pending %s)", fmtFt(rw.sftFt), fmtFt(rw.sftClaimed), fmtFt(rw.sftPending)), C_SUB)
-        setText("MeterEarnD2", string.format("Lend rewards %s FT  (received %s, pending %s)", fmtFt(rw.lendFt), fmtFt(rw.lendReceived), fmtFt(rw.lendPending)), C_SUB)
-        local by = {}
-        for _, c in ipairs(rw.chains or {}) do if c.sft + c.lend >= 0.005 then by[#by + 1] = c.name .. " " .. fmtFt(c.sft + c.lend) end end
-        setText("MeterEarnD3", #by > 0 and ("By chain: " .. table.concat(by, ", ")) or "", C_FAINT)
-      end
-    else setText("MeterEarnVal", "unavailable", C_FAINT) end
-    tip("MeterEarnVal", earnedTip(rw)); tip("MeterEarnLbl", earnedTip(rw))
-    if S.points then
-      local r = S.rank
-      setText("MeterPointsVal", fmtPoints(S.points.total) .. (r and ("  rank " .. thousands(r.rank)) or ""), C_TEXT)
-      local by = {}
-      for _, c in ipairs(S.points.chains or {}) do by[#by + 1] = c.name .. " " .. fmtPoints(c.points) end
-      setText("MeterPointsD1", table.concat(by, ", "), C_SUB)
-      setText("MeterPointsD2", r and string.format("Rank %s of %s, all chains", thousands(r.rank), thousands(r.total))
-        or "flyingtulip.com shows one chain at a time", C_FAINT)
-    else setText("MeterPointsVal", "unavailable", C_FAINT) end
-    tip("MeterPointsVal", pointsTip(S.points, S.rank)); tip("MeterPointsLbl", pointsTip(S.points, S.rank))
-    if S.puts then
-      local g = putGain(S.puts, S.price and S.price.price)
-      if g and g.gainPct then setText("MeterPutVal", fmtPct(g.gainPct) .. "  " .. fmtSignedUsd(g.gainUsd), deltaColor(g.gainUsd))
-      else setText("MeterPutVal", S.puts.count .. " position" .. (S.puts.count == 1 and "" or "s"), C_TEXT) end
-    else setText("MeterPutVal", "none", C_FAINT) end
-    layoutAccount(function(m) return (shownText[m] or "") ~= "" end)
-    local pos = allPositions()
-    if pos then
-      setText("MeterPosHead", #pos > 0 and ("Positions of " .. shortAddr(cfg.wallet) .. ": " .. #pos .. " open") or "Positions: none open", C_FAINT)
-      for i = 1, POS_ROWS do
-        local p = pos[i]
-        if p then
-          local lev = (p.leverage and p.leverage > 0) and string.format(p.leverage >= 10 and " %.0fx" or " %.1fx", p.leverage) or ""
-          setText("MeterPos" .. i, string.format("%s %s%s  %s  %s", p.symbol, p.side, lev, p.network, fmtSignedUsd(p.pnlUsd)), deltaColor(p.pnlUsd))
-          link("MeterPos" .. i, marketUrl(p.market, p.chainId), "positions-row")
-        else setText("MeterPos" .. i, ""); link("MeterPos" .. i, PORTFOLIO_URL, "positions-row") end
-      end
-      if #pos > POS_ROWS then setText("MeterPos" .. POS_ROWS, string.format("+%d more (see portfolio)", #pos - POS_ROWS + 1), C_FAINT); link("MeterPos" .. POS_ROWS, PORTFOLIO_URL, "positions-more") end
-    else
-      setText("MeterPosHead", "Positions: unavailable", C_FAINT)
-      for i = 1, POS_ROWS do setText("MeterPos" .. i, "") end
-    end
-  end
+  -- the canvas, and the meters this render did not place are hidden
+  set("MeterCanvas", "Shape", shapes[1] or "Rectangle 0,0,1,1 | Fill Color 0,0,0,0 | StrokeWidth 0")
+  for i = 2, #shapes do set("MeterCanvas", "Shape" .. i, shapes[i]) end
+  for i = #shapes + 1, lastShapes do set("MeterCanvas", "Shape" .. i, "") end
+  lastShapes = #shapes
+  for _, m in ipairs(CONTENT) do set(m, "Hidden", placed[m] and "0" or "1") end
   SK:Bang("!UpdateMeter", "*")
   SK:Bang("!Redraw")
 end
@@ -1038,6 +1331,26 @@ function ShowTab(name)
     S.tab = name
     SK:Bang("!WriteKeyValue", "Variables", "Tab", name, "#@#Settings.inc")
     sendStat("Tab view", { { "tab", name } })
+    M.render()
+  end)
+end
+-- FT earned over time: total earned or claimed
+function SetHistSeries(s)
+  M.guard("SetHistSeries", function()
+    if not S or (s ~= "earned" and s ~= "claimed") then return end
+    S.histSeries = s
+    M.render()
+  end)
+end
+-- FT earned over time: the range (7d, 30d, 90d, all), fetched again for the wallet shown
+function SetHistRange(r)
+  M.guard("SetHistRange", function()
+    if not S or not (r == "7d" or r == "30d" or r == "90d" or r == "all") then return end
+    S.histRange = r
+    S.hist = nil
+    SK:Bang("!SetVariable", "HistRange", r)
+    SK:Bang("!CommandMeasure", "MeasureHist", "Update")
+    SK:Bang("!UpdateMeasure", "MeasureHist")
     M.render()
   end)
 end
@@ -1054,7 +1367,8 @@ end
 -- ---------------------------------------------------------------- wallets: per-wallet state, rotation, watch
 -- The skin shows one wallet at a time (S.cur). Its account values live directly in S (S.lend, S.rewards, ...) so the
 -- renderer reads them as before; the other wallets' values are parked in S.w[addr] and swapped in on a switch.
-local ACCOUNT_KEYS = { "lend", "lend143", "sum146", "sum1", "sum56", "sum143", "rewards", "points", "pos146", "pos1", "pos56", "puts" }
+local ACCOUNT_KEYS = { "lend", "lend143", "sum146", "sum1", "sum56", "sum143", "rewards", "points", "pos146", "pos1", "pos56", "puts",
+  "hist", "ptsRows" }
 
 local function walletState(w)
   local W = S.w[w]
@@ -1283,7 +1597,8 @@ local PARSE = {
   price = parsePrice, fees = parseFees, feesSeries = parseFeesSeries, klines = parseKlines,
   lend = parseLend, lend143 = parseLend, sum146 = parseSummary, sum1 = parseSummary, sum56 = parseSummary,
   sum143 = parseSummary, rewards = parseRewards, points = parsePoints, pos146 = parsePositions, pos1 = parsePositions,
-  pos56 = parsePositions, puts = function(b) return parsePuts(b) end
+  pos56 = parsePositions, puts = function(b) return parsePuts(b) end,
+  hist = function(b) return parseRewardsSeries(b, now()) end, ptsRows = parsePointsBreakdown
 }
 
 function M.ingest(key, body)
@@ -1492,7 +1807,8 @@ function Initialize()
     end
     local tab = tostring(SK:GetVariable("Tab") or ""):lower()
     if not validTab(tab) then tab = cfg.wallet ~= "" and "account" or "market" end
-    S = { ts = {}, err = {}, startedAt = now(), lendRate = cfg.refresh, w = {}, cur = cfg.wallet, shownAt = now(), tab = tab }
+    S = { ts = {}, err = {}, startedAt = now(), lendRate = cfg.refresh, w = {}, cur = cfg.wallet, shownAt = now(), tab = tab,
+      histRange = "30d", histSeries = "earned" }
     rank = { active = false }
     watch = { active = false, last = 0 }
     -- the launch pageview, unless one was sent less than an hour ago (a skin refresh is not a launch)

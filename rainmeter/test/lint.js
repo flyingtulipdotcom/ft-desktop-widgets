@@ -29,7 +29,9 @@ for (const [n, s] of Object.entries(main.sections)) {
   if (s.MeterStyle) ok(s.MeterStyle in main.sections, n + " uses unknown style " + s.MeterStyle)
 }
 const luaMeters = new Set([...lua.matchAll(/"(Meter[A-Za-z0-9]+)"(?!\s*\.\.)/g)].map(m => m[1]))
-for (const m of luaMeters) ok(m in main.sections, "Lua references missing meter " + m)
+// a name the script completes with a number (MeterPos .. i) or a range (MeterRange .. "7d") counts when that family exists
+const family = m => Object.keys(main.sections).some(k => k.startsWith(m) && /^(\d+|7d|30d|90d|all)$/.test(k.slice(m.length)))
+for (const m of luaMeters) ok(m in main.sections || family(m), "Lua references missing meter " + m)
 for (let i = 1; i <= 4; i++) ok("MeterPos" + i in main.sections, "MeterPos" + i + " missing")
 const bangTargets = new Set([...JSON.stringify(main).matchAll(/CommandMeasure (Measure[A-Za-z]+)/g)].map(m => m[1]))
 for (const m of [...bangTargets, ...[...lua.matchAll(/"(Measure[A-Za-z0-9]+)"/g)].map(x => x[1])])
@@ -37,10 +39,11 @@ for (const m of [...bangTargets, ...[...lua.matchAll(/"(Measure[A-Za-z0-9]+)"/g)
 
 // every text/image/shape meter except the background, buttons, controls (tabs, cog, wallet switch) and the input
 // links to a public page; the controls call the script
-const CONTROLS = new Set(["MeterCog", "MeterSwitch", "MeterTabMarket", "MeterTabAccount", "MeterTabPositions"])
+const CONTROLS = new Set(["MeterCog", "MeterSwitch", "MeterTabMarket", "MeterTabAccount", "MeterTabPositions", "MeterHistTotal",
+  "MeterHistClaimed", "MeterRange7d", "MeterRange30d", "MeterRange90d", "MeterRangeall"])
 for (const n of CONTROLS) ok(/^\[!CommandMeasure MeasureScript "\w+\('?\w*'?\)"\]$/.test((main.sections[n] || {}).LeftMouseUpAction || ""), n + " must call the script")
 for (const [n, s] of Object.entries(main.sections)) {
-  if (!n.startsWith("Meter") || n === "MeterBackground" || n.startsWith("MeterBtn") || n === "MeterInput" || CONTROLS.has(n)) continue
+  if (!n.startsWith("Meter") || n === "MeterBackground" || n === "MeterCanvas" || n === "MeterBtnRefresh" || n === "MeterInput" || CONTROLS.has(n)) continue
   // through OpenLink(element, url), which counts the click (anonymous usage stats) and opens the page
   ok(/^\[!CommandMeasure MeasureScript "OpenLink\('[a-z0-9-]+','https:\/\/flyingtulip\.com\/[^']*'\)"\]$/.test(s.LeftMouseUpAction || ""), n + " has no flyingtulip.com link through OpenLink")
 }
@@ -91,8 +94,16 @@ if (input) {
   ok(/^\[!CommandMeasure MeasureScript "AddWallet\('\$UserInput\$'\)"\] DefaultValue=""$/.test(input.Command2 || ""), "InputText Command2 must call AddWallet('$UserInput$') with an empty box")
   ok(/Render\(\)/.test(input.OnDismissAction || ""), "InputText OnDismissAction must call Render()")
 }
-for (const where of [main.sections.Rainmeter.ContextAction, main.sections.MeterBtnWallet.LeftMouseUpAction, main.sections.MeterCog.LeftMouseUpAction])
-  ok(where === '[!CommandMeasure MeasureScript "OpenWallets(1)"]', "the cog, the Wallets button and the first menu entry open the wallet list: " + where)
+for (const where of [main.sections.Rainmeter.ContextAction, main.sections.MeterCog.LeftMouseUpAction])
+  ok(where === '[!CommandMeasure MeasureScript "OpenWallets(1)"]', "the cog and the first menu entry open the wallet list: " + where)
+// Main.ini is generated: it must match tools/gen_main_ini.js
+{
+  const before = fs.readFileSync(path.join(root, "Main.ini"), "utf8")
+  const r = cp.spawnSync(process.execPath, [path.join(__dirname, "..", "tools", "gen_main_ini.js")], { encoding: "utf8" })
+  const after = fs.readFileSync(path.join(root, "Main.ini"), "utf8")
+  if (after !== before) fs.writeFileSync(path.join(root, "Main.ini"), before)
+  ok(r.status === 0 && after === before, "Main.ini is out of date: run tools/gen_main_ini.js")
+}
 ok(/"ExecuteBatch " \.\./.test(lua), "OpenWallets must open the box with ExecuteBatch")
 ok(/^Wallets=$/m.test(fs.readFileSync(path.join(root, "@Resources", "Settings.inc"), "utf8")), "Settings.inc must ship with an empty Wallets=")
 ok(/OnLoaded\(\)/.test(main.sections.Rainmeter.OnRefreshAction), "OnRefreshAction must call OnLoaded")
