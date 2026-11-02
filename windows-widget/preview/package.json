@@ -8,5 +8,8 @@
     "adaptivecards": "3.0.5",
     "adaptivecards-templating": "2.3.1",
     "playwright-core": "1.49.1"
+  },
+  "overrides": {
+    "swiper": "12.1.2"
   }
 }
