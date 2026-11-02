@@ -15,3 +15,4 @@ windows-widget/**/bin/
 windows-widget/**/obj/
 windows-widget/out/
 windows-widget/preview/node_modules/
+windows-widget/preview/out/

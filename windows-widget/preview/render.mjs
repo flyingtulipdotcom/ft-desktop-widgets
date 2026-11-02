@@ -4,6 +4,7 @@
 // drawn with a host config that stands in for the Windows 11 widget host. The accent colour is the one place it differs
 // on purpose: the board uses the user's Windows accent colour, the preview shows the Flying Tulip purple.
 //
+// Build first: bun run build
 // Usage: node render.mjs <dataDir> <outDir>
 // Env:   FT_CHROME  path of a Chromium/Chrome executable (default: Playwright's own)
 import { chromium } from "playwright-core";
@@ -81,7 +82,7 @@ function pageHtml(p, size) {
 
 const names = fs.readdirSync(dataDir).filter((f) => f.endsWith(".template.json")).map((f) => f.replace(".template.json", ""));
 const browser = await chromium.launch({ executablePath: process.env.FT_CHROME || undefined, args: ["--no-sandbox"] });
-const acJs = path.join(here, "node_modules/adaptivecards/dist/adaptivecards.js");
+const acJs = path.join(here, "out/adaptivecards.js");
 const report = [];
 let failed = false;
 
