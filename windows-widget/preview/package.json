@@ -8,5 +8,12 @@
     "adaptivecards": "3.0.5",
     "adaptivecards-templating": "2.3.1",
     "playwright-core": "1.49.1"
+  },
+  "overrides": {
+    "swiper": "12.1.2"
+  },
+  "scripts": {
+    "build": "bun build ./renderer-entry.mjs --target browser --format iife --outfile out/adaptivecards.js",
+    "test:renderer": "node check-renderer.mjs"
   }
 }

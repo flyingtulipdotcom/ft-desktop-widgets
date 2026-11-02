@@ -58,10 +58,13 @@ jobs:
         working-directory: windows-widget/preview
         run: |
           bun install --frozen-lockfile
+          bun run build
           bunx playwright-core install --with-deps chromium
       - name: Render every tab and size with the Adaptive Cards renderer, light and dark
         working-directory: windows-widget/preview
-        run: node render.mjs ../out/data ../out/shots
+        run: |
+          node check-renderer.mjs
+          node render.mjs ../out/data ../out/shots
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: windows-widget-previews, path: windows-widget/out/, if-no-files-found: warn }
