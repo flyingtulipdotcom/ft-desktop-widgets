@@ -10,7 +10,8 @@
     "playwright-core": "1.49.1"
   },
   "overrides": {
-    "swiper": "12.1.2"
+    "swiper": "12.1.2",
+    "fast-xml-parser": "5.12.0"
   },
   "scripts": {
     "build": "bun build ./renderer-entry.mjs --target browser --format iife --outfile out/adaptivecards.js",
